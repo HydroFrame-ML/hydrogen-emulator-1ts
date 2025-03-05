@@ -2,8 +2,7 @@
 
 This folder contains the scripts for the one time step emulator. The goal of this emulator is to predict the next timestep for a ParFlow simulation. 
 
-## Key files in this folder: 
-- `example_config.yaml`: Contains all of the settings needed for a run. These are the knobs that should be turned.
+## Key files in the `emulator-1ts` folder: 
 - `main.py`: this is the main script that does the training. It call all the other classes and functions.
 - `*_scalers*.yaml`: Are the scalers files with the mean and standard deviation for every layer of every variable. Right now everything is set to `standard_scaler` meaning that variables will be scaled by subtracting the mean and dividing by the standard deviation. All scalers were calculated using scripts in the `CONUS2_Data_Prep` folder, refer to the readme there for more details. There are multiple versions of the scalers files available using the following naming convention: 
     - `*original` or `adjusted` : The original calcualted scalers with no adjustments made. The adjusted files have the standard deviation changed to 1 for all of the layers where the standard devaition was 0 or something <1e-15.
@@ -12,6 +11,7 @@ This folder contains the scripts for the one time step emulator. The goal of thi
 
 ## Before you start: 
 - In order to run a training run you first need to generate a set of test data. You can do that using `notebooks/make_subset_domain*.ipynb`
+- `example_config.yaml`: Contains all of the settings needed for a run. These are the knobs that should be turned.
 - You will also need to adjust the `example.config.yaml` to reflect your local paths and run names.
     - **Note**: The`in_channels` should equal the total number of layers you are using from your parameter list + n_evaptrans (# of evaptrans layers being used) + 10 (#of layers in a perssure file). (For example, if your input parameter list is slopex, slopey and permeabilityx and you use all layers from these files and have 4 evaptrans layers  then the in_channels will be 1+1+10+4+10 = 26)
 
@@ -30,7 +30,7 @@ Select `Python3` as the kernel and then you shoudl be good to run
 *Note:* From other enviroments you can also use `module load hydrogen-shared` to load this enviroment. 
 
 ## How to run a traning run
-From terminal: `python main.py --config example_config.yaml --mode train`
+From terminal: `python ./emulator-1ts/main.py --config example_config.yaml --mode train`
 
 ## CONUS2.1 Update progress: 
 - New scalers have been calculated for the CONUS2.1 run and are available in this folder.
