@@ -64,7 +64,7 @@ class ParFlowDataset(Dataset):
         Generate a list of names that will be used to input to the model.
         This will be used as a way to record the order that the variables
         go into the model so that they can be scaled internally. See 
-        model.scale_pressure, model.cale_evaptrans, and model.scale_statics
+        model.scale_pressure, model.scale_evaptrans, and model.scale_statics
         for more information.
         """
         self.PRESSURE_NAMES = [f'press_diff_{i}' for i in range(self.Z_EXTENT)]
