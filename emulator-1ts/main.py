@@ -1,12 +1,15 @@
 import yaml
 import torch
+import pandas as pd
+from tqdm import tqdm
 
 from dataset import ParFlowDataset
 from model import get_model
 from train import train_model
 from argparse import ArgumentParser
-from utils import get_optimizer, get_loss, get_dtype
+from utils import get_optimizer, get_loss, get_dtype, calculate_metrics
 from torch.utils.data import DataLoader
+from logger import set_log_level, info, verbose, error, LogLevel, get_log_level
 
 def read_config(config_path):
     with open(config_path, 'r') as f:
@@ -41,21 +44,26 @@ def train(
     device: str,
     num_workers: int,
     dtype: str,
+    config: dict,
     **kwargs
 ):
+    info(f"Initializing training with name: {name}")
+    verbose(f"Training parameters: epochs={n_epochs}, batch_size={batch_size}, lr={lr}, device={device}")
+    
     # Create the data loader
     dtype = get_dtype(dtype)
+    info("Creating dataset and data loader")
     dataset = ParFlowDataset(**data_def, dtype=dtype)
+    verbose(f"Dataset created with {len(dataset)} samples")
     train_dl = DataLoader(
         dataset, 
         batch_size=batch_size, 
         collate_fn=custom_collate, 
-        shuffle=True, 
         num_workers=num_workers
     )
 
-
     # Create the model
+    info(f"Creating model of type: {model_type}")
     # Add names of model inputs to model definition for scaling, if needed
     model_def['pressure_names'] = dataset.PRESSURE_NAMES
     model_def['evaptrans_names'] = dataset.EVAPTRANS_NAMES
@@ -65,53 +73,162 @@ def train(
     model_def['param_nlayer'] = dataset.param_nlayer
     model = get_model(model_type, model_def)
     model = model.to(device).to(dtype)
+    verbose(f"Model created and moved to {device} with dtype {dtype}")
 
 
     # Create the optimizer and loss function
+    info(f"Setting up optimizer ({optimizer}) and loss function ({loss})")
     optimizer = get_optimizer(optimizer, model, lr)
     loss_fn = get_loss(loss)
 
-    metrics = train_model(
-        model, train_dl, optimizer, loss_fn, n_epochs, device=device
-    )
+    info("Starting model training")
+    metrics = train_model(model, train_dl, optimizer, loss_fn, n_epochs, device=device)
+    info("Training completed, displaying metrics")
     print('----------------------------------------')
     print(metrics)
     print('----------------------------------------')
     
+    info("Saving model artifacts")
     metrics_filename = f'{log_location}/{name}_metrics.csv'
     weights_filename = f'{log_location}/{name}_weights_only.pth'
     model_filename = f'{log_location}/{name}_model.pth'
+    config['model_path'] = model_filename
+    config['weights_path'] = weights_filename
+    config['metrics_path'] = metrics_filename
+    
+    verbose(f"Saving config to {log_location}/{name}_config.yaml")
+    with open(f'{log_location}/{name}_config.yaml', 'w') as f:
+        yaml.safe_dump(config, f)
+    
+    verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
+    
+    verbose("Converting model to float64 for saving")
+    model = model.to(torch.float64)
+    
+    verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
+    
+    verbose(f"Creating and saving TorchScript model to {model_filename}")
     m = torch.jit.script(model)
     torch.jit.save(m, model_filename)
 
+    info("Training process completed successfully")
     print('----------------------------------------')
     print(f'Metrics saved to {metrics_filename}')
     print(f'Model saved to {model_filename}')
+    print(f'Config saved to {log_location}/{name}_config.yaml')
 
 
-def test():
-    pass
 
-def main(config, mode):
+def test(
+    name: str,
+    log_location: str,
+    model_path: str,
+    data_def: dict,
+    batch_size: int,
+    device: str,
+    num_workers: int,
+    dtype: str,
+    **kwargs
+):
+    info(f"Initializing testing with name: {name}")
+    verbose(f"Testing parameters: batch_size={batch_size}, device={device}")
+    
+    dtype = get_dtype(dtype)
+    # Load the model
+    info(f"Loading model from {model_path}")
+    model = torch.jit.load(model_path)
+    model = model.to(device).to(dtype)
+    verbose(f"Model loaded and moved to {device} with dtype {dtype}")
+    
+    # Create the data loader
+    info("Creating dataset and data loader for testing")
+    dataset = ParFlowDataset(**data_def, dtype=dtype)
+    verbose(f"Test dataset created with {len(dataset)} samples")
+    test_dl = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        collate_fn=custom_collate, 
+        shuffle=False, 
+        num_workers=num_workers
+    )
+    
+    info("Starting model evaluation")
+    model.eval()
+    all_outputs = []
+    all_targets = []
+    
+    verbose("Processing test batches")
+    
+    # Use tqdm progress bar only in verbose mode
+    is_verbose = get_log_level() == LogLevel.VERBOSE
+    
+    # Wrap test_dl with tqdm if in verbose mode
+    batch_iterator = tqdm(test_dl, desc="Testing batch") if is_verbose else test_dl
+    
+    with torch.no_grad():
+        for i, batch in enumerate(batch_iterator):
+            s, e, p, y = batch
+            s, e, p, y = s.to(device), e.to(device), p.to(device), y.to(device)
+            outputs = model(s, e, p)
+            all_outputs.append(outputs.cpu())
+            all_targets.append(y.cpu())
+    
+    info("Evaluation completed, processing results")
+    all_outputs = torch.cat(all_outputs)
+    all_targets = torch.cat(all_targets)
+    info(f'All outputs shape: {all_outputs.shape}')
+    info(f'All targets shape: {all_targets.shape}')
+    
+    # Save the outputs
+    output_filename = f'{log_location}/{name}_outputs.pt'
+    verbose(f"Saving model outputs to {output_filename}")
+    torch.save(all_outputs, output_filename)
+    info(f'Outputs saved to {output_filename}')
+    
+    # Calculate and print metrics
+    info("Calculating evaluation metrics")
+    metrics = calculate_metrics(all_outputs, all_targets)
+    metrics_filename = f'{log_location}/{name}_test_metrics.csv'
+    verbose(f"Saving metrics to {metrics_filename}")
+    metrics.to_csv(metrics_filename)
+    info(f'Test metrics saved to {metrics_filename}')
+    info("Test results:")
+    print(metrics)
+    
+    info("Testing process completed successfully")
+
+
+def main(config, mode, log_level):
+    # Set the log level
+    set_log_level(log_level)
+    
+    # Log the start of the program
+    info(f"Starting emulator in {mode} mode with log level {log_level}")
+    
+    # Read the configuration file
     config = read_config(config)
+    verbose(f"Loaded configuration from {config}")
 
     if mode == "train":
-        print("TRAINING")
-        train(**config)
+        info("Starting training process")
+        train(**config, config=config)
     elif mode == "test":
-        print("TESTING")
-        # Note: Not implemented
+        info("Starting testing process")
         test(**config)
 
 
 if __name__ == "__main__":
-    # EXAMPLE USAGE: python main.py --config example_config.yaml --mode train
+    # EXAMPLE USAGE: python main.py --config example_config.yaml --mode train --log-level info
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument(
         "--mode", type=str, required=True, choices=["train", "test"], default="train"
     )
+    parser.add_argument(
+        "--log-level", type=str, choices=["silent", "info", "verbose"], default="silent",
+        help="Set the logging level (silent, info, verbose)"
+    )
     args = parser.parse_args()
-    main(args.config, args.mode)
+    main(args.config, args.mode, args.log_level)
