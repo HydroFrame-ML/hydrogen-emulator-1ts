@@ -6,18 +6,19 @@ loss: mse # fixed for now
 n_epochs: 10 # small for testing
 batch_size: 32 # small for testing
 lr: 0.001
-num_workers: 16
+num_workers: 4
 dtype: float32
 device: cuda:0
 data_def:
   data_dir: /home/ab6361/hydrogen_workspace/hydrogen-emulator-1ts/
-  run_name: test_box2_conus2_2002WY # name of parflow run
+  run_name: CONUS2.1_boxtest_conus2_baseline_2002-10-01 # name of parflow run
   parameter_list: ['slope_x', 'slope_y', 'permeability_x', 'permeability_y' , 'permeability_z', 'porosity', 'pf_flowbarrier', 'mannings', 'specific_storage', 'sres' , 'ssat']
-  patch_size: 16
-  overlap: 8
+  patch_size: 128
+  overlap: 32
   #param_nlayer: [0, 0, 0, 0, 0, 0, 0, 0, 0,0,0]
   param_nlayer: [0, 0, 3, 3, 3, 0, 0, 0, -5] #Number of layers to use for each file in the parameter lis (0= use all, -n = n top layers, +n = n bottom layers)
   n_evaptrans: 4
+  shuffle: False
 model_def:
   in_channels: 51 # Number of input channels from state_data
   out_channels: 10 # Number of output channels (depth layers)
