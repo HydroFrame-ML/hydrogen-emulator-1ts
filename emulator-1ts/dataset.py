@@ -15,14 +15,14 @@ from logger import info, verbose, error
 class ParFlowDataset(Dataset):
 
     def __init__(
-        self, data_dir, run_name,
-        parameter_list, patch_size, overlap, 
-        param_nlayer, n_evaptrans=0, 
+        self, data_location,
+        parameter_list, patch_size, overlap,
+        param_nlayer, n_evaptrans=0,
         shuffle=False, dtype=torch.float32,
-        preload=True, cache_size=64,
+        preload=True, cache_size=64, **kwargs,
     ):
-        super().__init__() 
-        self.base_dir = f'{data_dir}/{run_name}'
+        super().__init__()
+        self.base_dir = f'{data_location}'
         self.parameter_list = parameter_list
         self.param_nlayer = param_nlayer
         self.patch_size = patch_size
@@ -187,16 +187,10 @@ class ParFlowDataset(Dataset):
             if self.preload:
                 param_temp = self.static_data_dict[parameter]
                 # Extract subset
-                param_temp = param_temp[
-                    :, 
-                    patch_keys['y']['start']:patch_keys['y']['stop'],
-                    patch_keys['x']['start']:patch_keys['x']['stop']
-                ]
+                param_temp = param_temp[:, y_min:y_max+1, x_min:x_max+1]
             else:
                 param_temp = self._read_cached_pfb(
-                    file_name, 
-                    x_min=x_min, x_max=x_max, 
-                    y_min=y_min, y_max=y_max
+                    file_name, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max
                 )
 
             # Process layers

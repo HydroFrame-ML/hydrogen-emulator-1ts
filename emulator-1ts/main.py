@@ -50,17 +50,35 @@ def train(
     info(f"Initializing training with name: {name}")
     verbose(f"Training parameters: epochs={n_epochs}, batch_size={batch_size}, lr={lr}, device={device}")
     
-    # Create the data loader
+    # Create the data loaders
     dtype = get_dtype(dtype)
-    info("Creating dataset and data loader")
-    dataset = ParFlowDataset(**data_def, dtype=dtype)
-    verbose(f"Dataset created with {len(dataset)} samples")
+    info("Creating training dataset and data loader")
+    train_data_def = data_def.copy()
+    train_data_location = train_data_def.pop('train_data_location')
+    train_data_def['data_location'] = train_data_location
+    dataset = ParFlowDataset(**train_data_def, dtype=dtype)
+    verbose(f"Training dataset created with {len(dataset)} samples")
     train_dl = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        collate_fn=custom_collate, 
+        dataset,
+        batch_size=batch_size,
+        collate_fn=custom_collate,
         num_workers=num_workers
     )
+
+    val_dl = None
+    if 'validation_data_location' in data_def:
+        info("Creating validation dataset and data loader")
+        validation_data_def = data_def.copy()
+        validation_data_location = validation_data_def.pop('validation_data_location')
+        validation_data_def['data_location'] = validation_data_location
+        val_dataset = ParFlowDataset(**validation_data_def, dtype=dtype)
+        verbose(f"Validation dataset created with {len(val_dataset)} samples")
+        val_dl = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            collate_fn=custom_collate,
+            num_workers=num_workers
+        )
 
     # Create the model
     info(f"Creating model of type: {model_type}")
@@ -82,12 +100,12 @@ def train(
     loss_fn = get_loss(loss)
 
     info("Starting model training")
-    metrics = train_model(model, train_dl, optimizer, loss_fn, n_epochs, device=device)
+    metrics = train_model(model, train_dl, optimizer, loss_fn, n_epochs, val_dl=val_dl, device=device)
     info("Training completed, displaying metrics")
     print('----------------------------------------')
     print(metrics)
     print('----------------------------------------')
-    
+
     info("Saving model artifacts")
     metrics_filename = f'{log_location}/{name}_metrics.csv'
     weights_filename = f'{log_location}/{name}_weights_only.pth'
@@ -95,20 +113,20 @@ def train(
     config['model_path'] = model_filename
     config['weights_path'] = weights_filename
     config['metrics_path'] = metrics_filename
-    
+
     verbose(f"Saving config to {log_location}/{name}_config.yaml")
     with open(f'{log_location}/{name}_config.yaml', 'w') as f:
         yaml.safe_dump(config, f)
-    
+
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
-    
+
     verbose("Converting model to float64 for saving")
     model = model.to(torch.float64)
-    
+
     verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
-    
+
     verbose(f"Creating and saving TorchScript model to {model_filename}")
     m = torch.jit.script(model)
     torch.jit.save(m, model_filename)
@@ -144,14 +162,17 @@ def test(
     
     # Create the data loader
     info("Creating dataset and data loader for testing")
-    dataset = ParFlowDataset(**data_def, dtype=dtype)
+    test_data_def = data_def.copy()
+    test_data_location = test_data_def.pop('test_data_location')
+    test_data_def['data_location'] = test_data_location
+    dataset = ParFlowDataset(**test_data_def, dtype=dtype)
     verbose(f"Test dataset created with {len(dataset)} samples")
     test_dl = DataLoader(
         dataset, 
         batch_size=batch_size, 
         collate_fn=custom_collate, 
         shuffle=False, 
-        num_workers=num_workers
+        num_workers=num_workers,
     )
     
     info("Starting model evaluation")
@@ -170,8 +191,22 @@ def test(
     with torch.no_grad():
         for i, batch in enumerate(batch_iterator):
             s, e, p, y = batch
-            s, e, p, y = s.to(device), e.to(device), p.to(device), y.to(device)
+            s = s.to(device=device, non_blocking=True)
+            e = e.to(device=device, non_blocking=True)
+            p = p.to(device=device, non_blocking=True)
+            y = y.to(device=device, non_blocking=True)
+
+            model.scale_pressure(s)
+            model.scale_evaptrans(e)
+            model.scale_statics(p)
+            model.scale_pressure(y)
+
             outputs = model(s, e, p)
+
+            # Unscale the outputs
+            model.unscale_pressure(outputs)
+            model.unscale_pressure(y)
+
             all_outputs.append(outputs.cpu())
             all_targets.append(y.cpu())
     
@@ -186,6 +221,11 @@ def test(
     verbose(f"Saving model outputs to {output_filename}")
     torch.save(all_outputs, output_filename)
     info(f'Outputs saved to {output_filename}')
+    # Save the targets
+    target_filename = f'{log_location}/{name}_targets.pt'
+    verbose(f"Saving targets to {target_filename}")
+    torch.save(all_targets, target_filename)
+    info(f'Targets saved to {target_filename}')
     
     # Calculate and print metrics
     info("Calculating evaluation metrics")
