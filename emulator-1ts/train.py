@@ -70,7 +70,8 @@ def train_model(
 ):
     info(f"Starting model training for {max_epochs} epochs")
     verbose(f"Using device: {device}, dtype: {dtype}")
-    train_df, valid_df = pd.DataFrame(), pd.DataFrame()
+    train_df = pd.DataFrame()
+    valid_df = pd.DataFrame()
     for e in (bar := tqdm(range(max_epochs))):
         # Make sure to turn on train mode here
         # so that we update parameters
@@ -97,7 +98,6 @@ def train_model(
             scheduler.step()
 
     if val_dl is not None:
-        # Merge the two dataframes
-        train_df = pd.concat([train_df, valid_df], axis=1)
+        train_df['valid_loss'] = valid_df['valid_loss']
     info("Training completed")
     return train_df
