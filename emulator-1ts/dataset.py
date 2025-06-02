@@ -15,29 +15,40 @@ from logger import info, verbose, error
 class ParFlowDataset(Dataset):
 
     def __init__(
-        self, data_location,
-        parameter_list, patch_size, overlap,
+        self, data_location, run_name,
+        parameter_list, 
+        patch_size_x, 
+        patch_size_y,
+        overlap_x,
+        overlap_y,
         param_nlayer, n_evaptrans=0,
         shuffle=False, dtype=torch.float32,
         preload=True, cache_size=64, **kwargs,
     ):
         super().__init__()
-        self.base_dir = f'{data_location}'
+        self.base_dir = data_location
+        self.run_name = run_name
         self.parameter_list = parameter_list
         self.param_nlayer = param_nlayer
-        self.patch_size = patch_size
+        self.patch_size_x = patch_size_x
+        self.patch_size_y = patch_size_y
         self.n_evaptrans = n_evaptrans
-        self.overlap = overlap
+        self.overlap_x = overlap_x
+        self.overlap_y = overlap_y
         self.shuffle = shuffle
         self.dtype = dtype
         self.preload = preload
+        # NOTE: Used for internal debugging, should be set to False to disable
+        self.flag_set = False
         
         # Cache for frequently accessed PFB files
         self.cache = {}
         self.cache_size = cache_size
         
-        # Find and organize pressure files
-        self.pressure_files = sorted(glob(f'{self.base_dir}/transient/pressure*.pfb')) 
+        # Find and organize pressure files - note: getting rid of 00000 file 
+        # because the evaptrans file is not included as initial condition
+        self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))[1:]
+        info(self.pressure_files[0])
         self.pressure_files = {
             't': self.pressure_files[0:-1],
             't+1': self.pressure_files[1:]
@@ -51,7 +62,8 @@ class ParFlowDataset(Dataset):
         self.T_EXTENT = len(self.pressure_files['t'])
         
         # Pre-compute evaptrans file paths that correspond to pressure files
-        self.evaptrans_files = [f.replace('pressure', 'evaptrans') for f in self.pressure_files['t']]
+        self.evaptrans_files = [f.replace('press', 'evaptrans') for f in self.pressure_files['t']]
+        info(self.evaptrans_files[0])
         
         # Create static data dictionary to avoid loading the same static data multiple times
         self.static_data_dict = {}
@@ -66,8 +78,8 @@ class ParFlowDataset(Dataset):
         
         self.bgen = xb.BatchGenerator(
             self.dummy_data,
-            input_dims={'x': self.patch_size, 'y': self.patch_size, 'time': 1},
-            input_overlap={'x': self.overlap, 'y': self.overlap},
+            input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': 1},
+            input_overlap={'x': self.overlap_x, 'y': self.overlap_y},
             return_partial=False,
             shuffle=self.shuffle,
         )
@@ -95,7 +107,7 @@ class ParFlowDataset(Dataset):
                       'y': {'start': 0, 'stop': 2},}
                       
         for (parameter, n_lay) in zip(self.parameter_list, self.param_nlayer):
-            file_name = f'{self.base_dir}/static/{parameter}.pfb'
+            file_name = f'{self.base_dir}/{self.run_name}.out.{parameter}.pfb'
 
             # param_temp shape is (n_layers, y, x)
             param_temp = read_pfb(file_name, keys=patch_keys)
@@ -118,7 +130,7 @@ class ParFlowDataset(Dataset):
         info("Preloading static parameters...")
         # Load static parameters sequentially
         for parameter in self.parameter_list:
-            file_name = f'{self.base_dir}/static/{parameter}.pfb'
+            file_name = f'{self.base_dir}/{self.run_name}.out.{parameter}.pfb'
             self.static_data_dict[parameter] = read_pfb(file_name)
         verbose("Static parameters preloaded successfully.")
     
@@ -181,7 +193,7 @@ class ParFlowDataset(Dataset):
         parameter_data = []
         for (parameter, n_lay) in zip(self.parameter_list, self.param_nlayer):
             # Get file path
-            file_name = f'{self.base_dir}/static/{parameter}.pfb'
+            file_name = f'{self.base_dir}/{self.run_name}.out.{parameter}.pfb'
             
             # Load parameter data (either from preloaded cache or from disk)
             if self.preload:
@@ -225,6 +237,20 @@ class ParFlowDataset(Dataset):
         evaptrans = torch.from_numpy(evaptrans).to(self.dtype)
         parameter_data = torch.from_numpy(parameter_data).to(self.dtype)
         target_data = torch.from_numpy(target_data).to(self.dtype)
+
+        # Convert nan to -10
+        state_data = torch.nan_to_num(state_data, nan=-10.0)
+        evaptrans = torch.nan_to_num(evaptrans, nan=-10.0)
+        parameter_data = torch.nan_to_num(parameter_data, nan=-10.0)
+        target_data = torch.nan_to_num(target_data, nan=-10.0)
+
+        if self.flag_set:
+            # Print statistics for debugging
+            info(f"State data shape: {state_data.shape}, min: {state_data.min()}, max: {state_data.max()}")
+            info(f"Evaptrans shape: {evaptrans.shape}, min: {evaptrans.min()}, max: {evaptrans.max()}")
+            info(f"Parameter data shape: {parameter_data.shape}, min: {parameter_data.min()}, max: {parameter_data.max()}")
+            info(f"Target data shape: {target_data.shape}, min: {target_data.min()}, max: {target_data.max()}")
+
         
         return state_data, evaptrans, parameter_data, target_data
         

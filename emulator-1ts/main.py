@@ -56,6 +56,7 @@ def train(
     train_data_def = data_def.copy()
     train_data_location = train_data_def.pop('train_data_location')
     train_data_def['data_location'] = train_data_location
+    train_data_def['run_name'] = name
     dataset = ParFlowDataset(**train_data_def, dtype=dtype)
     verbose(f"Training dataset created with {len(dataset)} samples")
     train_dl = DataLoader(
@@ -71,6 +72,7 @@ def train(
         validation_data_def = data_def.copy()
         validation_data_location = validation_data_def.pop('validation_data_location')
         validation_data_def['data_location'] = validation_data_location
+        validation_data_def['run_name'] = name
         val_dataset = ParFlowDataset(**validation_data_def, dtype=dtype)
         verbose(f"Validation dataset created with {len(val_dataset)} samples")
         val_dl = DataLoader(
@@ -165,6 +167,7 @@ def test(
     test_data_def = data_def.copy()
     test_data_location = test_data_def.pop('test_data_location')
     test_data_def['data_location'] = test_data_location
+    test_data_def['run_name'] = name
     dataset = ParFlowDataset(**test_data_def, dtype=dtype)
     verbose(f"Test dataset created with {len(dataset)} samples")
     test_dl = DataLoader(

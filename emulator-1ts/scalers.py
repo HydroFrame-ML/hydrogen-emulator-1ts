@@ -13,5 +13,6 @@ def create_scalers_from_yaml(file):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 #DEFAULT_SCALER_PATH = f'{HERE}/default_scalers_adjusted_pressure.yaml'
-DEFAULT_SCALER_PATH = f'{HERE}/CONUS21_scalers_delta_manual.yaml'
+#DEFAULT_SCALER_PATH = f'{HERE}/CONUS21_scalers_delta_manual.yaml'
+DEFAULT_SCALER_PATH = f'{HERE}/CONUS21_scalers_parflow_names.yaml'
 DEFAULT_SCALERS = create_scalers_from_yaml(DEFAULT_SCALER_PATH)
