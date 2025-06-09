@@ -1,4 +1,4 @@
-name: UpperEel.wy2003
+name: UpperEel_box.wy2003
 log_location: /home/ab6361/hydrogen_workspace/hydrogen-emulator-1ts
 model_type: resnet # fixed for now
 optimizer: adam # fixed for now
@@ -10,9 +10,9 @@ num_workers: 16
 dtype: float32
 device: cuda:0
 data_def:
-  train_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel/
-  validation_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel/
-  test_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel/
+  train_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  validation_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  test_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
   parameter_list: ['alpha', 'n', 'slope_x', 'slope_y', 'perm_x', 'perm_y' , 'perm_z', 'porosity', 'mannings', 'specific_storage', 'sres' , 'ssat']
   patch_size_x: 64
   patch_size_y: 62

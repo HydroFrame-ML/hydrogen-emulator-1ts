@@ -238,11 +238,11 @@ class ParFlowDataset(Dataset):
         parameter_data = torch.from_numpy(parameter_data).to(self.dtype)
         target_data = torch.from_numpy(target_data).to(self.dtype)
 
-        # Convert nan to -10
-        state_data = torch.nan_to_num(state_data, nan=-10.0)
-        evaptrans = torch.nan_to_num(evaptrans, nan=-10.0)
-        parameter_data = torch.nan_to_num(parameter_data, nan=-10.0)
-        target_data = torch.nan_to_num(target_data, nan=-10.0)
+        # Replace any data below -9999 with -10    
+        state_data[state_data < -9999] = -10
+        evaptrans[evaptrans < -9999] = -10
+        parameter_data[parameter_data < -9999] = -10
+        target_data[target_data < -9999] = -10
 
         if self.flag_set:
             # Print statistics for debugging
