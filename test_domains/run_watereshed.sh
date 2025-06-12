@@ -18,7 +18,8 @@ if [ "$dist_forcings" = true ] ; then
     echo 'Distributing the forcings now'
     cd "$run_path/$watershed_name/forcings"
     cp "$repo_path/test_domains/dist_forc.py" . 
-    python dist_forc.py "$run_path/$watershed_name/forcings" $forcing_folder
+    
+    python dist_forc.py "$run_path/$watershed_name/forcings/" $forcing_folder
 fi
 
 # Make a directory for the WY you are runing, change directory to it and copy in the clm driver and the python run script
