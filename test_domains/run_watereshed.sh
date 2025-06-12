@@ -3,14 +3,15 @@
 #SBATCH --ntasks=4
 #SBATCH --time=30:00
 
-module load parflow-shared
+module purge
+module load hydrogen-shared
 
 # User inputs
 run_path="/home/lc2465/NAIRR/test_domains"
 repo_path="/home/lc2465/NAIRR/hydrogen-emulator-1ts"
 watershed_name="Upper_Eel"
 water_year=2003
-dist_forcings=true
+dist_forcings=false
 forcing_folder="WY2003"
 
 #If the forcings need to be distributed do that first
