@@ -45,9 +45,8 @@ class ParFlowDataset(Dataset):
         self.cache = {}
         self.cache_size = cache_size
         
-        # Find and organize pressure files - note: getting rid of 00000 file 
-        # because the evaptrans file is not included as initial condition
-        self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))[1:]
+        # Find and organize pressure files 
+        self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))
         info(self.pressure_files[0])
         self.pressure_files = {
             't': self.pressure_files[0:-1],
@@ -62,7 +61,8 @@ class ParFlowDataset(Dataset):
         self.T_EXTENT = len(self.pressure_files['t'])
         
         # Pre-compute evaptrans file paths that correspond to pressure files
-        self.evaptrans_files = [f.replace('press', 'evaptrans') for f in self.pressure_files['t']]
+        self.evaptrans_files = sorted(glob(f'{self.base_dir}/{run_name}.out.evaptrans.*.pfb'))
+        #[ f.replace('press', 'evaptrans') for f in self.pressure_files['t'] ]
         info(self.evaptrans_files[0])
         
         # Create static data dictionary to avoid loading the same static data multiple times
