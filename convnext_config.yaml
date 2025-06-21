@@ -1,0 +1,77 @@
+name: UpperEel_box.wy2003
+log_location: /home/ab6361/hydrogen_workspace/hydrogen-emulator-1ts/runs/
+model_type: convnext # fixed for now
+optimizer: adam # fixed for now
+loss: mse # fixed for now
+n_epochs: 100 # small for testing
+batch_size: 128 # small for testing
+lr: 0.001
+num_workers: 16
+dtype: float32
+device: cuda:0
+
+data_def:
+  train_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  validation_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  test_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  parameter_list: ['alpha', 'n', 'slope_x', 'slope_y', 'perm_x', 'perm_y', 'perm_z', 'porosity', 'mannings', 'specific_storage', 'sres', 'ssat']
+  param_nlayer: [        0,   0,         0,         0,                  0,        0,          0,          0,                 0,      0,    0] #Number of layers to use for each file in the parameter lis (0= use all, -n = n top layers, +n = n bottom layers)
+  patch_size_x: 64
+  patch_size_y: 62
+  overlap_x: 0
+  overlap_y: 0
+  n_evaptrans: 5
+  shuffle: False
+
+model_def:
+  in_channels: 98 # Number of input channels from state_data
+  out_channels: 10 # Number of output channels (depth layers)
+  kernel_size: 5 # Kernel size for the convolutional layers
+  bottleneck_dim: 64
+  hidden_dim: 256 # Number of filters in the convolutional layers
+  depth: 4 # Number of resnet blocks
+
+tensorboard:
+  enabled: true
+  log_hyperparams: true
+  log_model_graph: true
+  log_images: true
+  log_frequency: 5  # Log images every 5 epochs
+  max_images: 3
+
+callbacks:
+  # Early stopping
+  early_stopping:
+    enabled: true
+    monitor: 'val_loss'
+    patience: 15
+    min_delta: 1e-6
+    mode: 'min'
+    restore_best_weights: true
+  
+  # Model checkpointing
+  model_checkpoint:
+    enabled: false
+    monitor: 'val_loss'
+    save_best_only: true
+    save_weights_only: false
+    mode: 'min'
+    save_top_k: 3
+    verbose: true
+  
+  # Learning rate scheduling
+  lr_scheduler:
+    enabled: true
+    type: 'ReduceLROnPlateau'
+    mode: 'min'
+    factor: 0.5
+    patience: 3
+    min_lr: 1e-7
+    verbose: true
+  
+  # Gradient clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+    norm_type: 2.0
+

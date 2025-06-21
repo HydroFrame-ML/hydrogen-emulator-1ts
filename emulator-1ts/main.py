@@ -7,9 +7,11 @@ from dataset import ParFlowDataset
 from model import get_model
 from train import train_model
 from argparse import ArgumentParser
-from utils import get_optimizer, get_loss, get_dtype, calculate_metrics
+from utils import get_optimizer, get_loss, get_dtype, calculate_metrics, get_scheduler
 from torch.utils.data import DataLoader
 from logger import set_log_level, info, verbose, error, LogLevel, get_log_level
+from callbacks import CallbackManager, create_callbacks_from_config
+from experiment_tracking import create_tensorboard_tracker_from_config
 
 def read_config(config_path):
     with open(config_path, 'r') as f:
@@ -98,11 +100,44 @@ def train(
 
     # Create the optimizer and loss function
     info(f"Setting up optimizer ({optimizer}) and loss function ({loss})")
-    optimizer = get_optimizer(optimizer, model, lr)
+    optimizer_obj = get_optimizer(optimizer, model, lr)
     loss_fn = get_loss(loss)
-
+    
+    # Create learning rate scheduler if specified
+    scheduler = None
+    if 'callbacks' in config and 'lr_scheduler' in config['callbacks']:
+        lr_config = config['callbacks']['lr_scheduler']
+        if lr_config.get('enabled', False):
+            scheduler_type = lr_config.get('type', 'ReduceLROnPlateau')
+            scheduler = get_scheduler(scheduler_type, optimizer_obj, **lr_config)
+            info(f"Learning rate scheduler created: {scheduler_type}")
+    
+    # Create callback manager
+    callback_manager = CallbackManager()
+    
+    # Add callbacks from config
+    callbacks = create_callbacks_from_config(config, model, log_location, name)
+    for callback in callbacks:
+        callback_manager.add_callback(callback)
+    
+    # Add TensorBoard tracker
+    tensorboard_tracker = create_tensorboard_tracker_from_config(config, name)
+    if tensorboard_tracker:
+        callback_manager.add_callback(tensorboard_tracker)
+        info("TensorBoard tracking enabled")
+    
     info("Starting model training")
-    metrics = train_model(model, train_dl, optimizer, loss_fn, n_epochs, val_dl=val_dl, device=device)
+    metrics = train_model(
+        model, 
+        train_dl, 
+        optimizer_obj, 
+        loss_fn, 
+        n_epochs, 
+        scheduler=scheduler,
+        val_dl=val_dl, 
+        callback_manager=callback_manager,
+        device=device
+    )
     info("Training completed, displaying metrics")
     print('----------------------------------------')
     print(metrics)
