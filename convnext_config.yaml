@@ -1,9 +1,9 @@
 name: UpperEel_box.wy2003
 log_location: /home/ab6361/hydrogen_workspace/hydrogen-emulator-1ts/runs/
-model_type: resnet # fixed for now
+model_type: convnext # fixed for now
 optimizer: adam # fixed for now
 loss: mse # fixed for now
-n_epochs: 500 # small for testing
+n_epochs: 100 # small for testing
 batch_size: 128 # small for testing
 lr: 0.001
 num_workers: 16
@@ -26,8 +26,9 @@ data_def:
 model_def:
   in_channels: 98 # Number of input channels from state_data
   out_channels: 10 # Number of output channels (depth layers)
-  kernel_size: 3 # Kernel size for the convolutional layers
-  hidden_dim: 32 # Number of filters in the convolutional layers
+  kernel_size: 5 # Kernel size for the convolutional layers
+  bottleneck_dim: 64
+  hidden_dim: 256 # Number of filters in the convolutional layers
   depth: 4 # Number of resnet blocks
 
 tensorboard:

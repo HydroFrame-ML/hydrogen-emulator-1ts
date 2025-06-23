@@ -8,11 +8,15 @@ setup(
     packages=['emulator_1ts'],
     install_requires=[
         'torch',
+        'torchvision',
         'numpy',
         'xarray',
         'pandas',
         'dask[diagnostics]',
         'bottleneck',
         'xbatcher',
+        'tensorboard',
+        'matplotlib',
+        'seaborn',
     ],
 )
