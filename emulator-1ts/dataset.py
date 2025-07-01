@@ -22,7 +22,7 @@ class ParFlowDataset(Dataset):
         overlap_x,
         overlap_y,
         param_nlayer, n_evaptrans=0,
-        shuffle=False, dtype=torch.float32,
+        shuffle=False, dtype=torch.float64,
         preload=True, cache_size=64, **kwargs,
     ):
         super().__init__()
