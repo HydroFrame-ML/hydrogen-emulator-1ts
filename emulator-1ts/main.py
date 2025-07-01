@@ -136,7 +136,8 @@ def train(
         scheduler=scheduler,
         val_dl=val_dl, 
         callback_manager=callback_manager,
-        device=device
+        device=device,
+        dtype=dtype
     )
     info("Training completed, displaying metrics")
     print('----------------------------------------')
