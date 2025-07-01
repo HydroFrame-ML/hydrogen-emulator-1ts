@@ -16,20 +16,18 @@ class ParFlowDataset(Dataset):
 
     def __init__(
         self, data_location, run_name,
-        parameter_list, 
+        parameters,
         patch_size_x, 
         patch_size_y,
         overlap_x,
         overlap_y,
-        param_nlayer, n_evaptrans=0,
+        n_evaptrans=0,
         shuffle=False, dtype=torch.float64,
         preload=True, cache_size=64, **kwargs,
     ):
         super().__init__()
         self.base_dir = data_location
         self.run_name = run_name
-        self.parameter_list = parameter_list
-        self.param_nlayer = param_nlayer
         self.patch_size_x = patch_size_x
         self.patch_size_y = patch_size_y
         self.n_evaptrans = n_evaptrans
@@ -38,6 +36,12 @@ class ParFlowDataset(Dataset):
         self.shuffle = shuffle
         self.dtype = dtype
         self.preload = preload
+
+        #Split the parameter_list from param_nlayer
+        params, layers = zip(*parameters)
+        self.parameter_list = list(params)
+        self.param_nlayer = list(layers)
+        
         # NOTE: Used for internal debugging, should be set to False to disable
         self.flag_set = False
         
