@@ -32,6 +32,16 @@ def custom_collate(batch):
     y = torch.stack(y)
     return s, e, p, y
 
+
+def set_seed_all():
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        # torch.use_deterministic_algorithms(True) - doesn't work for relection
+        torch.backends.cudnn.benchmark = False
+
+
 def train(
     name: str,
     log_location: str,
@@ -46,12 +56,17 @@ def train(
     device: str,
     num_workers: int,
     dtype: str,
+    set_seed: bool,
     config: dict,
     **kwargs
 ):
     info(f"Initializing training with name: {name}")
     verbose(f"Training parameters: epochs={n_epochs}, batch_size={batch_size}, lr={lr}, device={device}")
-    
+
+    if set_seed:
+        set_seed_all()
+        info(f"Setting random seed for reproducibility")
+        
     # Create the data loaders
     dtype = get_dtype(dtype)
     info("Creating training dataset and data loader")
@@ -136,7 +151,8 @@ def train(
         scheduler=scheduler,
         val_dl=val_dl, 
         callback_manager=callback_manager,
-        device=device
+        device=device,
+        dtype=dtype
     )
     info("Training completed, displaying metrics")
     print('----------------------------------------')
@@ -185,6 +201,7 @@ def test(
     device: str,
     num_workers: int,
     dtype: str,
+    save_inputs: bool,
     **kwargs
 ):
     info(f"Initializing testing with name: {name}")
@@ -217,7 +234,14 @@ def test(
     model.eval()
     all_outputs = []
     all_targets = []
-    
+
+    if save_inputs:
+        all_states = []
+        all_evaptrans = []
+        all_scaled_states = []
+        all_scaled_evaptrans = []
+
+        
     verbose("Processing test batches")
     
     # Use tqdm progress bar only in verbose mode
@@ -229,6 +253,13 @@ def test(
     with torch.no_grad():
         for i, batch in enumerate(batch_iterator):
             s, e, p, y = batch
+
+            if save_inputs:
+                all_states.append(s)
+                all_evaptrans.append(e)
+                if i == 0:
+                    all_parameters = p
+
             s = s.to(device=device, non_blocking=True)
             e = e.to(device=device, non_blocking=True)
             p = p.to(device=device, non_blocking=True)
@@ -239,6 +270,12 @@ def test(
             model.scale_statics(p)
             model.scale_pressure(y)
 
+            if save_inputs:
+                all_scaled_states.append(s.cpu())
+                all_scaled_evaptrans.append(e.cpu())
+                if i == 0:
+                    all_scaled_parameters = p.cpu()
+                
             outputs = model(s, e, p)
 
             # Unscale the outputs
@@ -249,6 +286,11 @@ def test(
             all_targets.append(y.cpu())
     
     info("Evaluation completed, processing results")
+    if save_inputs:
+        all_states = torch.cat(all_states)
+        all_evaptrans = torch.cat(all_evaptrans)
+        all_scaled_states = torch.cat(all_scaled_states)
+        all_scaled_evaptrans = torch.cat(all_scaled_evaptrans)
     all_outputs = torch.cat(all_outputs)
     all_targets = torch.cat(all_targets)
     info(f'All outputs shape: {all_outputs.shape}')
@@ -264,7 +306,38 @@ def test(
     verbose(f"Saving targets to {target_filename}")
     torch.save(all_targets, target_filename)
     info(f'Targets saved to {target_filename}')
-    
+    if save_inputs:
+        # Save the states
+        states_filename = f'{log_location}/{name}_states.pt'
+        verbose(f"Saving states to {states_filename}")
+        torch.save(all_states, states_filename)
+        info(f'States saved to {states_filename}')
+        # Save the evapotranspiration
+        evaptrans_filename = f'{log_location}/{name}_evaptrans.pt'
+        verbose(f"Saving evapotranspiration to {evaptrans_filename}")
+        torch.save(all_evaptrans, evaptrans_filename)
+        info(f'Evapotranspiration saved to {evaptrans_filename}')
+        # Save the parameters
+        parameters_filename = f'{log_location}/{name}_parameters.pt'
+        verbose(f"Saving parameters to {parameters_filename}")
+        torch.save(all_parameters, parameters_filename)
+        info(f'Parameters saved to {parameters_filename}')
+        # Save the scaled states
+        scaled_states_filename = f'{log_location}/{name}_scaled_states.pt'
+        verbose(f"Saving scaled states to {scaled_states_filename}")
+        torch.save(all_scaled_states, scaled_states_filename)
+        info(f'Scaled states saved to {scaled_states_filename}')
+        # Save the scaled evapotranspiration
+        scaled_evaptrans_filename = f'{log_location}/{name}_scaled_evaptrans.pt'
+        verbose(f"Saving scaled evapotranspiration to {scaled_evaptrans_filename}")
+        torch.save(all_scaled_evaptrans, scaled_evaptrans_filename)
+        info(f'Scaled evapotranspiration saved to {scaled_evaptrans_filename}')
+        # Save the scaled parameters
+        scaled_parameters_filename = f'{log_location}/{name}_scaled_parameters.pt'
+        verbose(f"Saving scaled parameters to {scaled_parameters_filename}")
+        torch.save(all_scaled_parameters, scaled_parameters_filename)
+        info(f'Scaled parameters saved to {scaled_parameters_filename}')
+        
     # Calculate and print metrics
     info("Calculating evaluation metrics")
     metrics = calculate_metrics(all_outputs, all_targets)
@@ -278,7 +351,7 @@ def test(
     info("Testing process completed successfully")
 
 
-def main(config, mode, log_level):
+def main(config, mode, log_level, save_inputs):
     # Set the log level
     set_log_level(log_level)
     
@@ -294,7 +367,7 @@ def main(config, mode, log_level):
         train(**config, config=config)
     elif mode == "test":
         info("Starting testing process")
-        test(**config)
+        test(**config, save_inputs=save_inputs)
 
 
 if __name__ == "__main__":
@@ -308,5 +381,11 @@ if __name__ == "__main__":
         "--log-level", type=str, choices=["silent", "info", "verbose"], default="silent",
         help="Set the logging level (silent, info, verbose)"
     )
+    parser.add_argument(
+        "--save_inputs",
+        action="store_true",
+        help="If set, saves inputs during testing."
+    )
     args = parser.parse_args()
-    main(args.config, args.mode, args.log_level)
+    save_inputs = args.save_inputs if args.mode == "test" else False
+    main(args.config, args.mode, args.log_level, save_inputs)
