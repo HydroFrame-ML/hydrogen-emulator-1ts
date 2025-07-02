@@ -32,6 +32,16 @@ def custom_collate(batch):
     y = torch.stack(y)
     return s, e, p, y
 
+
+def set_seed_all():
+    torch.manual_seed(0)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        # torch.use_deterministic_algorithms(True) - doesn't work for relection
+        torch.backends.cudnn.benchmark = False
+
+
 def train(
     name: str,
     log_location: str,
@@ -46,12 +56,17 @@ def train(
     device: str,
     num_workers: int,
     dtype: str,
+    set_seed: bool,
     config: dict,
     **kwargs
 ):
     info(f"Initializing training with name: {name}")
     verbose(f"Training parameters: epochs={n_epochs}, batch_size={batch_size}, lr={lr}, device={device}")
-    
+
+    if set_seed:
+        set_seed_all()
+        info(f"Setting random seed for reproducibility")
+        
     # Create the data loaders
     dtype = get_dtype(dtype)
     info("Creating training dataset and data loader")

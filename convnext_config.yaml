@@ -9,6 +9,7 @@ lr: 0.001
 num_workers: 16
 dtype: float64
 device: cuda:0
+set_seed: true
 
 data_def:
   train_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
