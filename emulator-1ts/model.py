@@ -45,7 +45,7 @@ class ConvBlock(nn.Module):
             self.out_channels,
             kernel_size=self.kernel_size,
             padding=self.padding,
-            padding_mode='reflect'
+            padding_mode='zeros'
         )
 
     def forward(self, x):
@@ -73,7 +73,7 @@ class ResidualBlock(nn.Module):
             self.hidden_channels,
             kernel_size=self.kernel_size,
             padding=int(self.kernel_size / 2),
-            padding_mode='reflect',
+            padding_mode='zeros',
             groups=self.in_channels
         )
         self.layer_norm = LayerNorm2D(self.hidden_channels)
@@ -275,7 +275,7 @@ class ConvNeXTBlock(nn.Module):
             self.mid_channels,
             kernel_size=self.kernel_size,
             padding=self.padding,
-            padding_mode='reflect'
+            padding_mode='zeros'
         )
         self.conv2 = nn.Conv2d(
             self.mid_channels,
@@ -460,7 +460,7 @@ class ConvNeXT(torch.nn.Module):
         for l in self.layers:
             x = l(x)
 
-        return x
+        return x + pressure
 
 
 
