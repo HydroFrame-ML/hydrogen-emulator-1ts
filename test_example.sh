@@ -9,7 +9,10 @@
 #SBATCH --time=6:00:00
 
 # Load necessary modules here
+module load hydrogen-shared
+
 python ./emulator-1ts/main.py \
     --mode test \
-    --config ./runs/UpperEel_box.wy2003_config.yaml \
-    --log-level verbose
+    --config /home/ga6/workspace/model_training/UpperEel_box.wy2003_config.yaml \
+    --log-level verbose \
+    --save_inputs
