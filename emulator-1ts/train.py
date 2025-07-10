@@ -8,7 +8,7 @@ from callbacks import CallbackManager
 
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-DTYPE = torch.float32
+DTYPE = torch.float64
 
 def train_epoch(
     model,
