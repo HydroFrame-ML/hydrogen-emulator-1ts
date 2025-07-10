@@ -276,19 +276,19 @@ sres_5:
   type: StandardScaler
 sres_6:
   mean: 9.893851930700661e-05
-  std: 9.716301822600495e-06
+  std: 1.0 #9.716301822600495e-06
   type: StandardScaler
 sres_7:
   mean: 9.89596187256488e-05
-  std: 9.620390922184495e-06
+  std: 1.0 # 9.620390922184495e-06
   type: StandardScaler
 sres_8:
   mean: 9.89596187256488e-05
-  std: 9.620390922184495e-06
+  std: 1.0 #9.620390922184495e-06
   type: StandardScaler
 sres_9:
   mean: 9.89596187256488e-05
-  std: 9.620390922184495e-06
+  std: 1.0 #9.620390922184495e-06
   type: StandardScaler
 ssat_0:
   mean: 1.0
