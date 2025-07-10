@@ -174,13 +174,14 @@ def train(
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
 
-    verbose("Converting model to float64 for saving")
-    model = model.to(torch.float64)
+    verbose("Converting model to float32 for saving")
+    model = model.to(device='cpu', dtype=torch.float32)
 
     verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
 
     verbose(f"Creating and saving TorchScript model to {model_filename}")
+    
     m = torch.jit.script(model)
     torch.jit.save(m, model_filename)
 
