@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from functools import lru_cache
 import concurrent.futures
 
-from logger import info, verbose, error
+from .logger import info, verbose, error
 
 class ParFlowDataset(Dataset):
 
@@ -22,8 +22,10 @@ class ParFlowDataset(Dataset):
         overlap_x,
         overlap_y,
         n_evaptrans=0,
-        shuffle=False, dtype=torch.float64,
-        preload=True, cache_size=64, **kwargs,
+        shuffle=False, 
+        dtype=torch.float64,
+        preload=True, 
+        cache_size=64, **kwargs,
     ):
         super().__init__()
         self.base_dir = data_location
@@ -84,8 +86,8 @@ class ParFlowDataset(Dataset):
             self.dummy_data,
             input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': 1},
             input_overlap={'x': self.overlap_x, 'y': self.overlap_y},
-            return_partial=False,
-            shuffle=self.shuffle,
+            #return_partial=False,
+            #shuffle=self.shuffle,
         )
         
         # Generate variable names

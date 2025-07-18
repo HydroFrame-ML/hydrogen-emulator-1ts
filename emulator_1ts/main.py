@@ -80,7 +80,8 @@ def train(
         dataset,
         batch_size=batch_size,
         collate_fn=custom_collate,
-        num_workers=num_workers
+        num_workers=num_workers//2,
+        prefetch_factor=2
     )
 
     val_dl = None
@@ -96,7 +97,8 @@ def train(
             val_dataset,
             batch_size=batch_size,
             collate_fn=custom_collate,
-            num_workers=num_workers
+            num_workers=num_workers//2,
+            prefetch_factor=2
         )
 
     # Create the model

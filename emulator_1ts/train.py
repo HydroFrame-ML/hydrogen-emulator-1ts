@@ -214,6 +214,14 @@ def train_model(
                         # For other schedulers that don't take metrics, or if conversion fails
                         error(f"Scheduler step failed with metrics: {ex}")
                         scheduler.step()
+                else: # Step on train loss
+                    try:
+                        # Ensure train_loss is a float
+                        train_loss_value = float(epoch_logs['train_loss'])
+                        scheduler.step(train_loss_value)
+                    except (TypeError, ValueError) as ex:
+                        error(f"Scheduler step failed with metrics: {ex}")
+                        scheduler.step()
         
         # Log learning rate and optimizer state (always log, even without scheduler)
         if hasattr(scheduler, 'get_last_lr') and scheduler is not None:

@@ -1,5 +1,5 @@
 [project]
-name = "hydrogen-emulator-1ts"
+name = "emulator_1ts"
 version = "0.1.0"
 description = "One-timestep ResNet emulator for hydrologic modeling"
 requires-python = ">=3.10"

@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from scalers import DEFAULT_SCALERS
 from typing import Dict
+from .scalers import DEFAULT_SCALERS
 
 def get_model(
     model_name,
