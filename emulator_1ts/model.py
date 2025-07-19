@@ -252,6 +252,38 @@ class ResNet(torch.nn.Module):
             x = l(x)
 
         return x
+    
+    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, statics):
+        """
+        Autoregressive forward pass for multi-timestep prediction.
+        
+        Args:
+            initial_pressure: Initial pressure state [batch, z, y, x]
+            evaptrans_sequence: Evapotranspiration sequence [n_timesteps, batch, z, y, x]
+            statics: Static parameters [batch, n_params, y, x]
+            
+        Returns:
+            predictions: Sequence of predicted pressure states [n_timesteps, batch, z, y, x]
+        """
+        batch_size = initial_pressure.shape[0]
+        n_timesteps = evaptrans_sequence.shape[0]
+        predictions = []
+        
+        # Start with initial pressure state
+        current_state = initial_pressure
+        
+        for t in range(n_timesteps):
+            # Get evapotranspiration for current timestep
+            current_evaptrans = evaptrans_sequence[t]
+            
+            # Predict next state
+            next_state = self.forward(current_state, current_evaptrans, statics)
+            predictions.append(next_state)
+            
+            # Use prediction as input for next timestep
+            current_state = next_state
+            
+        return torch.stack(predictions)
 
 
 class ConvNeXTBlock(nn.Module):
@@ -461,6 +493,38 @@ class ConvNeXT(torch.nn.Module):
             x = l(x)
 
         return x + pressure
+    
+    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, statics):
+        """
+        Autoregressive forward pass for multi-timestep prediction.
+        
+        Args:
+            initial_pressure: Initial pressure state [batch, z, y, x]
+            evaptrans_sequence: Evapotranspiration sequence [n_timesteps, batch, z, y, x]
+            statics: Static parameters [batch, n_params, y, x]
+            
+        Returns:
+            predictions: Sequence of predicted pressure states [n_timesteps, batch, z, y, x]
+        """
+        batch_size = initial_pressure.shape[0]
+        n_timesteps = evaptrans_sequence.shape[0]
+        predictions = []
+        
+        # Start with initial pressure state
+        current_state = initial_pressure
+        
+        for t in range(n_timesteps):
+            # Get evapotranspiration for current timestep
+            current_evaptrans = evaptrans_sequence[t]
+            
+            # Predict next state
+            next_state = self.forward(current_state, current_evaptrans, statics)
+            predictions.append(next_state)
+            
+            # Use prediction as input for next timestep
+            current_state = next_state
+            
+        return torch.stack(predictions)
 
 
 

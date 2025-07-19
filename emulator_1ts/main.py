@@ -3,15 +3,16 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 
-from dataset import ParFlowDataset
-from model import get_model
-from train import train_model
 from argparse import ArgumentParser
-from utils import get_optimizer, get_loss, get_dtype, calculate_metrics, get_scheduler
 from torch.utils.data import DataLoader
-from logger import set_log_level, info, verbose, error, LogLevel, get_log_level
-from callbacks import CallbackManager, create_callbacks_from_config
-from experiment_tracking import create_tensorboard_tracker_from_config
+
+from .dataset import ParFlowDataset
+from .model import get_model
+from .train import train_model
+from .logger import set_log_level, info, verbose, error, LogLevel, get_log_level
+from .callbacks import CallbackManager, create_callbacks_from_config
+from .experiment_tracking import create_tensorboard_tracker_from_config
+from .utils import get_optimizer, get_loss, get_dtype, calculate_metrics, get_scheduler
 
 def read_config(config_path):
     with open(config_path, 'r') as f:
@@ -26,10 +27,19 @@ def custom_collate(batch):
         e.append(b[1])
         p.append(b[2])
         y.append(b[3])
+    
     s = torch.stack(s)
-    e = torch.stack(e)
     p = torch.stack(p)
-    y = torch.stack(y)
+    
+    # Handle both single-timestep and multi-timestep data
+    if len(e[0].shape) == 4:  # Multi-timestep: [n_timesteps, z, y, x]
+        # Stack along batch dimension, keeping timestep dimension first
+        e = torch.stack(e, dim=1)  # [n_timesteps, batch, z, y, x]
+        y = torch.stack(y, dim=1)  # [n_timesteps, batch, z, y, x]
+    else:  # Single-timestep: [z, y, x]
+        e = torch.stack(e)
+        y = torch.stack(y)
+    
     return s, e, p, y
 
 
@@ -129,6 +139,14 @@ def train(
             scheduler = get_scheduler(scheduler_type, optimizer_obj, **lr_config)
             info(f"Learning rate scheduler created: {scheduler_type}")
     
+    # Extract multi-timestep training parameters
+    autoregressive_loss_weights = None
+    if 'autoregressive' in config and config['autoregressive'] is not None:
+        autoregressive_config = config['autoregressive']
+        autoregressive_loss_weights = autoregressive_config.get('loss_weights', None)
+        if autoregressive_loss_weights:
+            info(f"Using custom autoregressive loss weights: {autoregressive_loss_weights}")
+    
     # Create callback manager
     callback_manager = CallbackManager()
     
@@ -154,7 +172,8 @@ def train(
         val_dl=val_dl, 
         callback_manager=callback_manager,
         device=device,
-        dtype=dtype
+        dtype=dtype,
+        autoregressive_loss_weights=autoregressive_loss_weights
     )
     info("Training completed, displaying metrics")
     print('----------------------------------------')

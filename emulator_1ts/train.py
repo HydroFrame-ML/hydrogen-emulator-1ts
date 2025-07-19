@@ -2,13 +2,44 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 from typing import Optional, Dict, Any
-from logger import info, verbose, error, get_log_level, LogLevel
-from utils import compute_channel_losses, compute_quantile_metrics
-from callbacks import CallbackManager
+from .logger import info, verbose, error, get_log_level, LogLevel
+from .utils import compute_channel_losses, compute_quantile_metrics
+from .callbacks import CallbackManager
 
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DTYPE = torch.float64
+
+def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
+    """
+    Calculate loss across multiple timesteps with optional weighting.
+    
+    Args:
+        predictions: Model predictions [n_timesteps, batch, z, y, x]
+        targets: Ground truth targets [n_timesteps, batch, z, y, x]
+        loss_fn: Loss function to use
+        weights: Optional weights for each timestep [n_timesteps]
+        
+    Returns:
+        Weighted average loss across timesteps
+    """
+    n_timesteps = predictions.shape[0]
+    
+    if weights is None:
+        # Default: equal weighting across all timesteps
+        weights = torch.ones(n_timesteps, device=predictions.device)
+    else:
+        weights = torch.tensor(weights, device=predictions.device, dtype=predictions.dtype)
+    
+    # Normalize weights to sum to 1
+    weights = weights / weights.sum()
+    
+    total_loss = 0.0
+    for t in range(n_timesteps):
+        timestep_loss = loss_fn(predictions[t], targets[t])
+        total_loss += weights[t] * timestep_loss
+    
+    return total_loss
 
 def train_epoch(
     model,
@@ -18,6 +49,7 @@ def train_epoch(
     device,
     callback_manager: Optional[CallbackManager] = None,
     train=True,
+    autoregressive_loss_weights=None,
 ):
     # Trains 1 epoch
     prefix = 'train' if train else 'val'
@@ -46,30 +78,65 @@ def train_epoch(
         evaptrans = evaptrans.to(device, non_blocking=True)
         params = params.to(device, non_blocking=True)
         y = y.to(device=device, non_blocking=True)
-        y = y.squeeze()
-
-        model.scale_pressure(state)
-        model.scale_evaptrans(evaptrans)
-        model.scale_statics(params)
-        model.scale_pressure(y)
+        
+        # Detect multi-timestep vs single-timestep based on target shape
+        is_multistep = len(y.shape) == 5  # [n_timesteps, batch, z, y, x]
+        
+        if is_multistep:
+            # Multi-timestep autoregressive training
+            n_timesteps = y.shape[0]
+            
+            # Scale data
+            model.scale_pressure(state)
+            model.scale_statics(params)
+            # Scale evaptrans sequence
+            for t in range(n_timesteps):
+                model.scale_evaptrans(evaptrans[t])
+            # Scale target sequence
+            for t in range(n_timesteps):
+                model.scale_pressure(y[t])
+        else:
+            # Single-timestep training (backward compatibility)
+            y = y.squeeze()
+            model.scale_pressure(state)
+            model.scale_evaptrans(evaptrans)
+            model.scale_statics(params)
+            model.scale_pressure(y)
 
         if not len(state): 
             continue
             
         optimizer.zero_grad()
-        if train:
-            yhat = model(state, evaptrans, params).squeeze()
-        else:
-            # Don't compute gradients when in validation mode. Saves on computation
-            with torch.no_grad():
-                yhat = model(state, evaptrans, params).squeeze()
+        
+        if is_multistep:
+            # Multi-timestep autoregressive prediction
+            if train:
+                yhat = model.forward_autoregressive(state, evaptrans, params)
+            else:
+                with torch.no_grad():
+                    yhat = model.forward_autoregressive(state, evaptrans, params)
+                    
+            if torch.isnan(yhat).any():
+                error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
+                error(f"NaN values in input state: {torch.isnan(state).sum()} NaNs")
+                raise ValueError(f'Predictions went nan! Nans in input: {torch.isnan(state).sum()}')
                 
-        if torch.isnan(yhat).any():
-            error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
-            error(f"NaN values in input state: {torch.isnan(state).sum()} NaNs")
-            raise ValueError(f'Predictions went nan! Nans in input: {torch.isnan(state).sum()}')
-            
-        loss = loss_fn(yhat, y)
+            # Calculate multi-timestep loss
+            loss = calculate_multistep_loss(yhat, y, loss_fn, autoregressive_loss_weights)
+        else:
+            # Single-timestep prediction (backward compatibility)  
+            if train:
+                yhat = model(state, evaptrans, params).squeeze()
+            else:
+                with torch.no_grad():
+                    yhat = model(state, evaptrans, params).squeeze()
+                    
+            if torch.isnan(yhat).any():
+                error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
+                error(f"NaN values in input state: {torch.isnan(state).sum()} NaNs")
+                raise ValueError(f'Predictions went nan! Nans in input: {torch.isnan(state).sum()}')
+                
+            loss = loss_fn(yhat, y)
         
         if train:
             loss.backward()
@@ -90,10 +157,23 @@ def train_epoch(
         # Store first batch for visualization (validation only)
         if not train and i == 0:
             # Unscale for visualization
-            model.unscale_pressure(yhat)
-            model.unscale_pressure(y)
-            sample_predictions = yhat.detach().cpu()
-            sample_targets = y.detach().cpu()
+            if is_multistep:
+                # Unscale sequence predictions and targets
+                yhat_viz = yhat.clone()
+                y_viz = y.clone()
+                for t in range(n_timesteps):
+                    model.unscale_pressure(yhat_viz[t])
+                    model.unscale_pressure(y_viz[t])
+                sample_predictions = yhat_viz.detach().cpu()
+                sample_targets = y_viz.detach().cpu()
+            else:
+                # Single-timestep unscaling
+                yhat_viz = yhat.clone()
+                y_viz = y.clone()
+                model.unscale_pressure(yhat_viz)
+                model.unscale_pressure(y_viz)
+                sample_predictions = yhat_viz.detach().cpu()
+                sample_targets = y_viz.detach().cpu()
     
     avg_loss = epoch_loss / max(num_batches, 1)
     
@@ -125,7 +205,8 @@ def train_model(
     val_dl=None, 
     callback_manager: Optional[CallbackManager] = None,
     device=DEVICE, 
-    dtype=DTYPE
+    dtype=DTYPE,
+    autoregressive_loss_weights=None
 ):
     info(f"Starting model training for {max_epochs} epochs")
     verbose(f"Using device: {device}, dtype: {dtype}")
@@ -153,7 +234,8 @@ def train_model(
             loss_fun, 
             callback_manager=callback_manager, 
             train=True, 
-            device=device
+            device=device,
+            autoregressive_loss_weights=autoregressive_loss_weights
         )
         train_df = train_df._append(train_metrics, ignore_index=True)
         tl = train_metrics['train_loss']
@@ -173,7 +255,8 @@ def train_model(
                 loss_fun, 
                 callback_manager=callback_manager, 
                 train=False, 
-                device=device
+                device=device,
+                autoregressive_loss_weights=autoregressive_loss_weights
             )
             valid_df = valid_df._append(valid_metrics, ignore_index=True)
             vl = valid_metrics['val_loss']

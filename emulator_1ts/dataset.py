@@ -5,7 +5,7 @@ import xbatcher as xb
 import numpy as np
 import matplotlib.pyplot as plt
 from glob import glob
-from parflow.tools.io import read_pfb
+from parflow.tools.io import read_pfb, read_pfb_sequence
 from torch.utils.data import Dataset
 from functools import lru_cache
 import concurrent.futures
@@ -22,6 +22,7 @@ class ParFlowDataset(Dataset):
         overlap_x,
         overlap_y,
         n_evaptrans=0,
+        n_timesteps=1,
         shuffle=False, 
         dtype=torch.float64,
         preload=True, 
@@ -33,6 +34,7 @@ class ParFlowDataset(Dataset):
         self.patch_size_x = patch_size_x
         self.patch_size_y = patch_size_y
         self.n_evaptrans = n_evaptrans
+        self.n_timesteps = n_timesteps
         self.overlap_x = overlap_x
         self.overlap_y = overlap_y
         self.shuffle = shuffle
@@ -51,30 +53,39 @@ class ParFlowDataset(Dataset):
         self.cache = {}
         self.cache_size = cache_size
         
-        # Find and organize pressure files 
+        # Find and organize data files 
         self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))
-        info(self.pressure_files[0])
-        self.pressure_files = {
-            't': self.pressure_files[0:-1],
-            't+1': self.pressure_files[1:]
-        }
+        self.evaptrans_files = sorted(glob(f'{self.base_dir}/{run_name}.out.evaptrans.*.pfb'))
         
-        # Pre-compute sizes
-        self.size_test = read_pfb(self.pressure_files['t'][0])
+        if not self.pressure_files:
+            raise ValueError(f"No pressure files found for run {run_name} in {self.base_dir}")
+        if not self.evaptrans_files:
+            raise ValueError(f"No evaptrans files found for run {run_name} in {self.base_dir}")
+            
+        info(f"Found {len(self.pressure_files)} pressure files and {len(self.evaptrans_files)} evaptrans files")
+        
+        # Determine maximum available timesteps accounting for sequence length
+        max_available_timesteps = min(len(self.pressure_files), len(self.evaptrans_files)) - self.n_timesteps
+        if max_available_timesteps <= 0:
+            raise ValueError(f"Not enough timesteps for n_timesteps={self.n_timesteps}. Need at least {self.n_timesteps + 1} files.")
+        
+        # Pre-compute sizes from first file
+        self.size_test = read_pfb(self.pressure_files[0])
         self.X_EXTENT = self.size_test.shape[2] 
         self.Y_EXTENT = self.size_test.shape[1]
         self.Z_EXTENT = self.size_test.shape[0]
-        self.T_EXTENT = len(self.pressure_files['t'])
+        self.T_EXTENT = max_available_timesteps
         
-        # Pre-compute evaptrans file paths that correspond to pressure files
-        self.evaptrans_files = sorted(glob(f'{self.base_dir}/{run_name}.out.evaptrans.*.pfb'))
-        #[ f.replace('press', 'evaptrans') for f in self.pressure_files['t'] ]
-        info(self.evaptrans_files[0])
+        verbose(f"Dataset dimensions: T={self.T_EXTENT}, Z={self.Z_EXTENT}, Y={self.Y_EXTENT}, X={self.X_EXTENT}")
+        verbose(f"Using {self.n_timesteps}-timestep sequences")
         
         # Create static data dictionary to avoid loading the same static data multiple times
         self.static_data_dict = {}
         
         # Create batch generator for efficient indexing
+        # For multi-timestep, we need n_timesteps+1 consecutive times (initial + n_timesteps targets)
+        time_window_size = self.n_timesteps + 1
+        
         self.dummy_data = xr.Dataset().assign_coords({
             'time': np.arange(self.T_EXTENT),
             'z': np.arange(self.Z_EXTENT),
@@ -84,8 +95,8 @@ class ParFlowDataset(Dataset):
         
         self.bgen = xb.BatchGenerator(
             self.dummy_data,
-            input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': 1},
-            input_overlap={'x': self.overlap_x, 'y': self.overlap_y},
+            input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': time_window_size},
+            input_overlap={'x': self.overlap_x, 'y': self.overlap_y, 'time': time_window_size-1},
             #return_partial=False,
             #shuffle=self.shuffle,
         )
@@ -168,48 +179,55 @@ class ParFlowDataset(Dataset):
     def __getitem__(self, idx):
         sample_indices = self.bgen[idx]
 
-        # Extract indices
-        time_index = sample_indices['time'].values[0]
+        # Extract spatial and temporal indices from xbatcher
+        time_indices = sample_indices['time'].values  # This is now a sequence
         x_min, x_max = sample_indices['x'].values[[0, -1]]
         y_min, y_max = sample_indices['y'].values[[0, -1]]
 
-        # Create patch keys
+        # Create patch keys for read_pfb_sequence
         patch_keys = {
             'x': {'start': x_min, 'stop': x_max+1},
             'y': {'start': y_min, 'stop': y_max+1},
         }
-    
-        # Load state data
-        file_to_read = self.pressure_files['t'][time_index]
-        state_data = self._read_cached_pfb(
-            file_to_read, 
-            x_min=x_min, x_max=x_max, 
-            y_min=y_min, y_max=y_max
-        )
+        
+        # Construct file sequences for pressure and evaptrans
+        pressure_file_sequence = [self.pressure_files[i] for i in time_indices]
+        evaptrans_file_sequence = [self.evaptrans_files[i] for i in time_indices[1:]]  # Skip first for evaptrans (t+1, t+2, ...)
+        
+        # Read pressure sequence (initial state + targets)
+        pressure_sequence = read_pfb_sequence(pressure_file_sequence, keys=patch_keys)
+        
+        # Split into initial state and targets
+        state_data = pressure_sequence[0]  # Initial state at time t
+        target_sequence = pressure_sequence[1:]  # Target states at t+1, t+2, ...
+        
+        # Read evaptrans sequence (for t+1, t+2, ...)
+        if evaptrans_file_sequence:
+            evaptrans_sequence_raw = read_pfb_sequence(evaptrans_file_sequence, keys=patch_keys)
+            
+            # Process evaptrans layers for each timestep
+            evaptrans_sequence = []
+            for evaptrans in evaptrans_sequence_raw:
+                if self.n_evaptrans > 0:
+                    evaptrans = evaptrans[0:self.n_evaptrans,:,:]
+                elif self.n_evaptrans < 0:
+                    evaptrans = evaptrans[self.n_evaptrans:,:,:]
+                evaptrans_sequence.append(evaptrans)
+            evaptrans_sequence = np.array(evaptrans_sequence)
+        else:
+            # Single timestep case
+            evaptrans_sequence = np.zeros((1, abs(self.n_evaptrans), y_max-y_min+1, x_max-x_min+1))
 
-        # Load target data
-        file_to_read_target = self.pressure_files['t+1'][time_index]
-        target_data = self._read_cached_pfb(
-            file_to_read_target, 
-            x_min=x_min, x_max=x_max, 
-            y_min=y_min, y_max=y_max
-        )
-
-        # Load parameter data
+        # Load parameter data (static, same for all timesteps)
         parameter_data = []
         for (parameter, n_lay) in zip(self.parameter_list, self.param_nlayer):
-            # Get file path
             file_name = f'{self.base_dir}/{self.run_name}.out.{parameter}.pfb'
             
-            # Load parameter data (either from preloaded cache or from disk)
             if self.preload:
                 param_temp = self.static_data_dict[parameter]
-                # Extract subset
                 param_temp = param_temp[:, y_min:y_max+1, x_min:x_max+1]
             else:
-                param_temp = self._read_cached_pfb(
-                    file_name, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max
-                )
+                param_temp = read_pfb(file_name, keys=patch_keys)
 
             # Process layers
             if param_temp.shape[0] > 1:
@@ -220,45 +238,27 @@ class ParFlowDataset(Dataset):
 
             parameter_data.append(param_temp)
 
-        # Concatenate parameters
         parameter_data = np.concatenate(parameter_data, axis=0)
-
-        # Load evaptrans data
-        file_name_et = self.evaptrans_files[time_index]
-        evaptrans = self._read_cached_pfb(
-            file_name_et, 
-            x_min=x_min, x_max=x_max, 
-            y_min=y_min, y_max=y_max
-        )
         
-        # Process evaptrans layers
-        if self.n_evaptrans > 0:
-            evaptrans = evaptrans[0:self.n_evaptrans,:,:]
-        elif self.n_evaptrans < 0:
-            evaptrans = evaptrans[self.n_evaptrans:,:,:]
-        
-        # Convert to torch tensors efficiently
-        # Use non_blocking=True if data is on a CUDA device
+        # Convert to torch tensors
         state_data = torch.from_numpy(state_data).to(self.dtype)
-        evaptrans = torch.from_numpy(evaptrans).to(self.dtype)
         parameter_data = torch.from_numpy(parameter_data).to(self.dtype)
-        target_data = torch.from_numpy(target_data).to(self.dtype)
+        target_sequence = torch.from_numpy(target_sequence).to(self.dtype)
+        evaptrans_sequence = torch.from_numpy(evaptrans_sequence).to(self.dtype)
 
-        # Replace any data below -9999 with -10    
+        # Clean invalid values
         state_data[state_data < -9999] = -10
-        evaptrans[evaptrans < -9999] = -10
         parameter_data[parameter_data < -9999] = -10
-        target_data[target_data < -9999] = -10
+        target_sequence[target_sequence < -9999] = -10
+        evaptrans_sequence[evaptrans_sequence < -9999] = -10
 
         if self.flag_set:
-            # Print statistics for debugging
             info(f"State data shape: {state_data.shape}, min: {state_data.min()}, max: {state_data.max()}")
-            info(f"Evaptrans shape: {evaptrans.shape}, min: {evaptrans.min()}, max: {evaptrans.max()}")
-            info(f"Parameter data shape: {parameter_data.shape}, min: {parameter_data.min()}, max: {parameter_data.max()}")
-            info(f"Target data shape: {target_data.shape}, min: {target_data.min()}, max: {target_data.max()}")
+            info(f"Evaptrans sequence shape: {evaptrans_sequence.shape}")
+            info(f"Parameter data shape: {parameter_data.shape}")
+            info(f"Target sequence shape: {target_sequence.shape}")
 
-        
-        return state_data, evaptrans, parameter_data, target_data
+        return state_data, evaptrans_sequence, parameter_data, target_sequence
         
     def clear_cache(self):
         """Clear the internal file cache"""

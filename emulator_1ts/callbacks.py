@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 from typing import Dict, Any, Optional, List
-from logger import info, verbose, error
+from .logger import info, verbose, error
 import copy
 
 

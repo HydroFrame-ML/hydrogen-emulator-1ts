@@ -6,8 +6,8 @@ from typing import Dict, Any, Optional, List, Union
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 
-from logger import info, verbose, error
-from visualization import (
+from .logger import info, verbose, error
+from .visualization import (
     create_timeseries_plot, 
     create_spatial_field_plot, 
     create_error_distribution_plot,
@@ -15,7 +15,7 @@ from visualization import (
     create_training_progress_plot,
     fig_to_image
 )
-from callbacks import Callback
+from .callbacks import Callback
 
 
 class TensorBoardTracker(Callback):
