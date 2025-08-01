@@ -1,7 +1,7 @@
 import os
 import pickle
 import yaml
-import utils
+from . import utils
 
 def create_scalers_from_yaml(file):
     with open(file, 'r') as f:

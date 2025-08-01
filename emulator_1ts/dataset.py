@@ -10,26 +10,26 @@ from torch.utils.data import Dataset
 from functools import lru_cache
 import concurrent.futures
 
-from logger import info, verbose, error
+from .logger import info, verbose, error
 
 class ParFlowDataset(Dataset):
 
     def __init__(
         self, data_location, run_name,
-        parameter_list, 
+        parameters,
         patch_size_x, 
         patch_size_y,
         overlap_x,
         overlap_y,
-        param_nlayer, n_evaptrans=0,
-        shuffle=False, dtype=torch.float32,
-        preload=True, cache_size=64, **kwargs,
+        n_evaptrans=0,
+        shuffle=False, 
+        dtype=torch.float64,
+        preload=True, 
+        cache_size=64, **kwargs,
     ):
         super().__init__()
         self.base_dir = data_location
         self.run_name = run_name
-        self.parameter_list = parameter_list
-        self.param_nlayer = param_nlayer
         self.patch_size_x = patch_size_x
         self.patch_size_y = patch_size_y
         self.n_evaptrans = n_evaptrans
@@ -38,6 +38,12 @@ class ParFlowDataset(Dataset):
         self.shuffle = shuffle
         self.dtype = dtype
         self.preload = preload
+
+        #Split the parameter_list from param_nlayer
+        params, layers = zip(*parameters)
+        self.parameter_list = list(params)
+        self.param_nlayer = list(layers)
+        
         # NOTE: Used for internal debugging, should be set to False to disable
         self.flag_set = False
         
@@ -45,9 +51,8 @@ class ParFlowDataset(Dataset):
         self.cache = {}
         self.cache_size = cache_size
         
-        # Find and organize pressure files - note: getting rid of 00000 file 
-        # because the evaptrans file is not included as initial condition
-        self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))[1:]
+        # Find and organize pressure files 
+        self.pressure_files = sorted(glob(f'{self.base_dir}/{run_name}.out.press.*.pfb'))
         info(self.pressure_files[0])
         self.pressure_files = {
             't': self.pressure_files[0:-1],
@@ -62,7 +67,8 @@ class ParFlowDataset(Dataset):
         self.T_EXTENT = len(self.pressure_files['t'])
         
         # Pre-compute evaptrans file paths that correspond to pressure files
-        self.evaptrans_files = [f.replace('press', 'evaptrans') for f in self.pressure_files['t']]
+        self.evaptrans_files = sorted(glob(f'{self.base_dir}/{run_name}.out.evaptrans.*.pfb'))
+        #[ f.replace('press', 'evaptrans') for f in self.pressure_files['t'] ]
         info(self.evaptrans_files[0])
         
         # Create static data dictionary to avoid loading the same static data multiple times
@@ -80,8 +86,8 @@ class ParFlowDataset(Dataset):
             self.dummy_data,
             input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': 1},
             input_overlap={'x': self.overlap_x, 'y': self.overlap_y},
-            return_partial=False,
-            shuffle=self.shuffle,
+            #return_partial=False,
+            #shuffle=self.shuffle,
         )
         
         # Generate variable names

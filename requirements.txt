@@ -1,7 +1,11 @@
 numpy
 pandas
 torch
+torchvision
 xarray
 dask[diagnostics]
 bottleneck
 xbatcher
+tensorboard
+matplotlib
+seaborn

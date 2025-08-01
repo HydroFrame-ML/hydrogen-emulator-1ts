@@ -4,3 +4,19 @@ train_scripts/*.ckpt
 .ipynb_checkpoints
 *egg-info
 *__pycache__
+
+# UV package manager
+.venv/
+uv.lock
+
+# TensorBoard logs
+runs/
+
+# Model outputs and checkpoints
+*.pth
+*.pt
+*_checkpoint_*.pth
+
+# Temporary files
+*.tmp
+*.log
