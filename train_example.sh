@@ -9,7 +9,7 @@
 #SBATCH --time=6:00:00
 
 # Load necessary modules here
-python ./emulator-1ts/main.py \
+python -m emulator_1ts.main \
     --mode train \
     --config example_config.yaml \
     --log-level verbose

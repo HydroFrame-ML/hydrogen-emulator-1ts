@@ -11,7 +11,7 @@
 # Load necessary modules here
 module load hydrogen-shared
 
-python ./emulator-1ts/main.py \
+python -m emulator_1ts.main \
     --mode test \
     --config /home/ga6/workspace/model_training/UpperEel_box.wy2003_config.yaml \
     --log-level verbose \

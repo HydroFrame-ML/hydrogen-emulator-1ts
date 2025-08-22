@@ -349,7 +349,8 @@ class ConvNeXT(torch.nn.Module):
         param_names=None,
         n_evaptrans=None,
         parameter_list=None,
-        param_nlayer=None
+        param_nlayer=None,
+        noise_scale=1e-6
     ):
         super().__init__()
         self.input_channels = in_channels
@@ -366,6 +367,7 @@ class ConvNeXT(torch.nn.Module):
         self.param_names = param_names
         self.parameter_list = parameter_list
         self.param_nlayer = param_nlayer
+        self.noise_scale = noise_scale
 
         self.layers = [
             ConvBlock(
@@ -488,6 +490,9 @@ class ConvNeXT(torch.nn.Module):
     def forward(self, pressure, evaptrans, statics):
         # Concatenate the data
         x = torch.cat([pressure, evaptrans, statics], dim=1)
+        # Add small noise to the input to help with stability
+        if self.training:
+            x = x + torch.randn_like(x) * self.noise_scale
 
         for l in self.layers:
             x = l(x)

@@ -27,10 +27,10 @@ def custom_collate(batch):
         e.append(b[1])
         p.append(b[2])
         y.append(b[3])
-    
+
     s = torch.stack(s)
     p = torch.stack(p)
-    
+
     # Handle both single-timestep and multi-timestep data
     if len(e[0].shape) == 4:  # Multi-timestep: [n_timesteps, z, y, x]
         # Stack along batch dimension, keeping timestep dimension first
@@ -39,7 +39,7 @@ def custom_collate(batch):
     else:  # Single-timestep: [z, y, x]
         e = torch.stack(e)
         y = torch.stack(y)
-    
+
     return s, e, p, y
 
 
@@ -76,7 +76,7 @@ def train(
     if set_seed:
         set_seed_all()
         info(f"Setting random seed for reproducibility")
-        
+
     # Create the data loaders
     dtype = get_dtype(dtype)
     info("Creating training dataset and data loader")
@@ -129,7 +129,7 @@ def train(
     info(f"Setting up optimizer ({optimizer}) and loss function ({loss})")
     optimizer_obj = get_optimizer(optimizer, model, lr)
     loss_fn = get_loss(loss)
-    
+
     # Create learning rate scheduler if specified
     scheduler = None
     if 'callbacks' in config and 'lr_scheduler' in config['callbacks']:
@@ -138,7 +138,7 @@ def train(
             scheduler_type = lr_config.get('type', 'ReduceLROnPlateau')
             scheduler = get_scheduler(scheduler_type, optimizer_obj, **lr_config)
             info(f"Learning rate scheduler created: {scheduler_type}")
-    
+
     # Extract multi-timestep training parameters
     autoregressive_loss_weights = None
     if 'autoregressive' in config and config['autoregressive'] is not None:
@@ -146,32 +146,31 @@ def train(
         autoregressive_loss_weights = autoregressive_config.get('loss_weights', None)
         if autoregressive_loss_weights:
             info(f"Using custom autoregressive loss weights: {autoregressive_loss_weights}")
-    
+
     # Create callback manager
     callback_manager = CallbackManager()
-    
+
     # Add callbacks from config
     callbacks = create_callbacks_from_config(config, model, log_location, name)
     for callback in callbacks:
         callback_manager.add_callback(callback)
-    
+
     # Add TensorBoard tracker
     tensorboard_tracker = create_tensorboard_tracker_from_config(config, name)
     if tensorboard_tracker:
         callback_manager.add_callback(tensorboard_tracker)
         info("TensorBoard tracking enabled")
-    
+
     info("Starting model training")
     metrics = train_model(
-        model, 
-        train_dl, 
-        optimizer_obj, 
-        loss_fn, 
-        n_epochs, 
+        model,
+        train_dl,
+        optimizer_obj,
+        loss_fn,
+        n_epochs,
         scheduler=scheduler,
-        val_dl=val_dl, 
+        val_dl=val_dl,
         callback_manager=callback_manager,
-        device=device,
         dtype=dtype,
         autoregressive_loss_weights=autoregressive_loss_weights
     )
@@ -189,20 +188,22 @@ def train(
     config['metrics_path'] = metrics_filename
 
     verbose(f"Saving config to {log_location}/{name}_config.yaml")
+
+    # NOTE: remove timesteps because we only want to use the model 1ts
+    config.pop("n_timesteps")
     with open(f'{log_location}/{name}_config.yaml', 'w') as f:
         yaml.safe_dump(config, f)
 
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
 
-    verbose("Converting model to float32 for saving")
-    model = model.to(device='cpu', dtype=torch.float32)
+    model = model.to(device='cpu')
 
     verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
 
     verbose(f"Creating and saving TorchScript model to {model_filename}")
-    
+
     m = torch.jit.script(model)
     torch.jit.save(m, model_filename)
 
@@ -228,14 +229,14 @@ def test(
 ):
     info(f"Initializing testing with name: {name}")
     verbose(f"Testing parameters: batch_size={batch_size}, device={device}")
-    
+
     dtype = get_dtype(dtype)
     # Load the model
     info(f"Loading model from {model_path}")
     model = torch.jit.load(model_path)
     model = model.to(device).to(dtype)
     verbose(f"Model loaded and moved to {device} with dtype {dtype}")
-    
+
     # Create the data loader
     info("Creating dataset and data loader for testing")
     test_data_def = data_def.copy()
@@ -245,13 +246,13 @@ def test(
     dataset = ParFlowDataset(**test_data_def, dtype=dtype)
     verbose(f"Test dataset created with {len(dataset)} samples")
     test_dl = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        collate_fn=custom_collate, 
-        shuffle=False, 
+        dataset,
+        batch_size=batch_size,
+        collate_fn=custom_collate,
+        shuffle=False,
         num_workers=num_workers,
     )
-    
+
     info("Starting model evaluation")
     model.eval()
     all_outputs = []
@@ -263,15 +264,15 @@ def test(
         all_scaled_states = []
         all_scaled_evaptrans = []
 
-        
+
     verbose("Processing test batches")
-    
+
     # Use tqdm progress bar only in verbose mode
     is_verbose = get_log_level() == LogLevel.VERBOSE
-    
+
     # Wrap test_dl with tqdm if in verbose mode
     batch_iterator = tqdm(test_dl, desc="Testing batch") if is_verbose else test_dl
-    
+
     with torch.no_grad():
         for i, batch in enumerate(batch_iterator):
             s, e, p, y = batch
@@ -297,7 +298,7 @@ def test(
                 all_scaled_evaptrans.append(e.cpu())
                 if i == 0:
                     all_scaled_parameters = p.cpu()
-                
+
             outputs = model(s, e, p)
 
             # Unscale the outputs
@@ -306,7 +307,7 @@ def test(
 
             all_outputs.append(outputs.cpu())
             all_targets.append(y.cpu())
-    
+
     info("Evaluation completed, processing results")
     if save_inputs:
         all_states = torch.cat(all_states)
@@ -317,7 +318,7 @@ def test(
     all_targets = torch.cat(all_targets)
     info(f'All outputs shape: {all_outputs.shape}')
     info(f'All targets shape: {all_targets.shape}')
-    
+
     # Save the outputs
     output_filename = f'{log_location}/{name}_outputs.pt'
     verbose(f"Saving model outputs to {output_filename}")
@@ -359,7 +360,7 @@ def test(
         verbose(f"Saving scaled parameters to {scaled_parameters_filename}")
         torch.save(all_scaled_parameters, scaled_parameters_filename)
         info(f'Scaled parameters saved to {scaled_parameters_filename}')
-        
+
     # Calculate and print metrics
     info("Calculating evaluation metrics")
     metrics = calculate_metrics(all_outputs, all_targets)
@@ -369,17 +370,17 @@ def test(
     info(f'Test metrics saved to {metrics_filename}')
     info("Test results:")
     print(metrics)
-    
+
     info("Testing process completed successfully")
 
 
 def main(config, mode, log_level, save_inputs):
     # Set the log level
     set_log_level(log_level)
-    
+
     # Log the start of the program
     info(f"Starting emulator in {mode} mode with log level {log_level}")
-    
+
     # Read the configuration file
     config = read_config(config)
     verbose(f"Loaded configuration from {config}")
