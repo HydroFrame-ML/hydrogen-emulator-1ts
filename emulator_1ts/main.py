@@ -190,7 +190,7 @@ def train(
     verbose(f"Saving config to {log_location}/{name}_config.yaml")
 
     # NOTE: remove timesteps because we only want to use the model 1ts
-    config.pop("n_timesteps")
+    config["data_def"].pop("n_timesteps")
     with open(f'{log_location}/{name}_config.yaml', 'w') as f:
         yaml.safe_dump(config, f)
 
