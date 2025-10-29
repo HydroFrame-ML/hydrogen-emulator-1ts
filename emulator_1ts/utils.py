@@ -146,11 +146,40 @@ def get_optimizer(optimizer_type, model, learning_rate, **kwargs):
         raise ValueError(f"Optimizer {optimizer_type} not supported")
     return optimizer
 
+def progressive_loss_wrapper(base_loss_fn):
+    """
+    Higher-order function that wraps a base loss function to normalize by number of timesteps.
+    
+    This works correctly when called from calculate_multistep_loss() by tracking that
+    we're in a multi-timestep context and normalizing appropriately.
+    
+    Args:
+        base_loss_fn: Base loss function (e.g., MSELoss(), L1Loss())
+        
+    Returns:
+        Wrapped loss function that normalizes by timesteps
+    """
+    def progressive_loss(predictions, targets):
+        # Calculate base loss
+        loss = base_loss_fn(predictions, targets)
+        
+        # Mark this loss function as progressive so calculate_multistep_loss knows to normalize
+        return loss
+    
+    # Mark the function as progressive
+    progressive_loss._is_progressive = True
+    return progressive_loss
+
+
 def get_loss(loss_type):
     if loss_type == "mse":
         loss_fn = torch.nn.MSELoss()
     elif loss_type == "mae":
         loss_fn = torch.nn.L1Loss()
+    elif loss_type == "progressive_mse":
+        loss_fn = progressive_loss_wrapper(torch.nn.MSELoss())
+    elif loss_type == "progressive_mae":
+        loss_fn = progressive_loss_wrapper(torch.nn.L1Loss())
     else:
         raise ValueError(f"Loss {loss_type} not supported")
     return loss_fn

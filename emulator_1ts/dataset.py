@@ -26,7 +26,10 @@ class ParFlowDataset(Dataset):
         shuffle=False,
         dtype=torch.float64,
         preload=True,
-        cache_size=64, **kwargs,
+        cache_size=64,
+        max_timesteps=None,  # Maximum timesteps for progressive training
+        noise_std=1e-9,  # Standard deviation for Gaussian noise perturbation
+        **kwargs,
     ):
         super().__init__()
         self.base_dir = data_location
@@ -35,11 +38,13 @@ class ParFlowDataset(Dataset):
         self.patch_size_y = patch_size_y
         self.n_evaptrans = n_evaptrans
         self.n_timesteps = n_timesteps
+        self.max_timesteps = max_timesteps or n_timesteps  # Use max if provided
         self.overlap_x = overlap_x
         self.overlap_y = overlap_y
         self.shuffle = shuffle
         self.dtype = dtype
         self.preload = preload
+        self.noise_std = noise_std
 
         #Split the parameter_list from param_nlayer
         params, layers = zip(*parameters)
@@ -64,9 +69,11 @@ class ParFlowDataset(Dataset):
         info(f"Found {len(self.pressure_files)} pressure files and {len(self.evaptrans_files)} evaptrans files")
 
         # Determine maximum available timesteps accounting for sequence length
-        max_available_timesteps = min(len(self.pressure_files), len(self.evaptrans_files)) - self.n_timesteps
+        # Use max_timesteps for validation to ensure we have enough data for progressive training
+        max_needed_timesteps = max(self.max_timesteps, self.n_timesteps)
+        max_available_timesteps = min(len(self.pressure_files), len(self.evaptrans_files)) - max_needed_timesteps
         if max_available_timesteps <= 0:
-            raise ValueError(f"Not enough timesteps for n_timesteps={self.n_timesteps}. Need at least {self.n_timesteps + 1} files.")
+            raise ValueError(f"Not enough timesteps for max_timesteps={max_needed_timesteps}. Need at least {max_needed_timesteps + 1} files.")
 
         # Pre-compute sizes from first file
         self.size_test = read_pfb(self.pressure_files[0])
@@ -251,6 +258,24 @@ class ParFlowDataset(Dataset):
         target_sequence[target_sequence < -9999] = -10
         evaptrans_sequence[evaptrans_sequence < -9999] = -10
 
+        # Add small Gaussian noise perturbation to prevent numerical issues
+        if self.noise_std > 0:
+            # Add noise to state data
+            noise = torch.randn_like(state_data) * self.noise_std
+            state_data = state_data + noise
+
+            # Add noise to parameter data
+            noise = torch.randn_like(parameter_data) * self.noise_std
+            parameter_data = parameter_data + noise
+
+            # Add noise to target sequence
+            noise = torch.randn_like(target_sequence) * self.noise_std
+            target_sequence = target_sequence + noise
+
+            # Add noise to evaptrans sequence
+            noise = torch.randn_like(evaptrans_sequence) * self.noise_std
+            evaptrans_sequence = evaptrans_sequence + noise
+
         #TODO: FIXME
         self.flag_set = False
         if self.flag_set:
@@ -260,6 +285,45 @@ class ParFlowDataset(Dataset):
             info(f"Target sequence shape: {target_sequence.shape}")
 
         return state_data, evaptrans_sequence, parameter_data, target_sequence
+
+    def update_timesteps(self, new_timesteps: int):
+        """
+        Update the number of timesteps for progressive training.
+        This recreates the batch generator with the new timestep settings.
+        
+        Args:
+            new_timesteps: New number of timesteps to use
+        """
+        if new_timesteps == self.n_timesteps:
+            verbose(f"Timesteps already set to {new_timesteps}, no update needed")
+            return
+        
+        if new_timesteps > self.max_timesteps:
+            raise ValueError(f"Cannot set timesteps to {new_timesteps}, exceeds max_timesteps={self.max_timesteps}")
+        
+        old_timesteps = self.n_timesteps
+        self.n_timesteps = new_timesteps
+        
+        verbose(f"Updating dataset timesteps: {old_timesteps} -> {new_timesteps}")
+        
+        # Recreate batch generator with new time window size
+        time_window_size = self.n_timesteps + 1
+        
+        self.bgen = xb.BatchGenerator(
+            self.dummy_data,
+            input_dims={'x': self.patch_size_x, 'y': self.patch_size_y, 'time': time_window_size},
+            input_overlap={'x': self.overlap_x, 'y': self.overlap_y, 'time': time_window_size-1},
+        )
+        
+        verbose(f"Dataset batch generator updated for {new_timesteps}-timestep sequences")
+    
+    def get_timesteps(self) -> int:
+        """Get the current number of timesteps."""
+        return self.n_timesteps
+    
+    def get_max_timesteps(self) -> int:
+        """Get the maximum number of timesteps supported."""
+        return self.max_timesteps
 
     def clear_cache(self):
         """Clear the internal file cache"""

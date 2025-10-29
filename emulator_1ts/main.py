@@ -13,6 +13,7 @@ from .logger import set_log_level, info, verbose, error, LogLevel, get_log_level
 from .callbacks import CallbackManager, create_callbacks_from_config
 from .experiment_tracking import create_tensorboard_tracker_from_config
 from .utils import get_optimizer, get_loss, get_dtype, calculate_metrics, get_scheduler
+from .progressive_timesteps import ProgressiveTimestepManager
 
 def read_config(config_path):
     with open(config_path, 'r') as f:
@@ -77,6 +78,10 @@ def train(
         set_seed_all()
         info(f"Setting random seed for reproducibility")
 
+    # Initialize progressive timestep manager
+    timestep_manager = ProgressiveTimestepManager(config)
+    max_timesteps = timestep_manager.get_max_timesteps()
+    
     # Create the data loaders
     dtype = get_dtype(dtype)
     info("Creating training dataset and data loader")
@@ -84,6 +89,8 @@ def train(
     train_data_location = train_data_def.pop('train_data_location')
     train_data_def['data_location'] = train_data_location
     train_data_def['run_name'] = name
+    # Add max_timesteps parameter for progressive training
+    train_data_def['max_timesteps'] = max_timesteps
     dataset = ParFlowDataset(**train_data_def, dtype=dtype)
     verbose(f"Training dataset created with {len(dataset)} samples")
     train_dl = DataLoader(
@@ -95,12 +102,15 @@ def train(
     )
 
     val_dl = None
+    val_dataset = None
     if 'validation_data_location' in data_def:
         info("Creating validation dataset and data loader")
         validation_data_def = data_def.copy()
         validation_data_location = validation_data_def.pop('validation_data_location')
         validation_data_def['data_location'] = validation_data_location
         validation_data_def['run_name'] = name
+        # Add max_timesteps parameter for progressive training
+        validation_data_def['max_timesteps'] = max_timesteps
         val_dataset = ParFlowDataset(**validation_data_def, dtype=dtype)
         verbose(f"Validation dataset created with {len(val_dataset)} samples")
         val_dl = DataLoader(
@@ -172,7 +182,10 @@ def train(
         val_dl=val_dl,
         callback_manager=callback_manager,
         dtype=dtype,
-        autoregressive_loss_weights=autoregressive_loss_weights
+        autoregressive_loss_weights=autoregressive_loss_weights,
+        timestep_manager=timestep_manager,
+        train_dataset=dataset,
+        val_dataset=val_dataset
     )
     info("Training completed, displaying metrics")
     print('----------------------------------------')
@@ -189,10 +202,20 @@ def train(
 
     verbose(f"Saving config to {log_location}/{name}_config.yaml")
 
-    # NOTE: remove timesteps because we only want to use the model 1ts
-    config.pop("n_timesteps")
+    # Save configuration with progressive timestep information
+    config_to_save = config.copy()
+    
+    # If using progressive timesteps, keep the progressive config but set n_timesteps to final value
+    if timestep_manager and timestep_manager.is_enabled():
+        config_to_save['data_def']['n_timesteps'] = timestep_manager.get_max_timesteps()
+        config_to_save['final_timesteps_used'] = timestep_manager.get_max_timesteps()
+        config_to_save['progression_info'] = timestep_manager.get_progression_info()
+    else:
+        # NOTE: remove timesteps for traditional single timestep training
+        config_to_save.pop("n_timesteps", None)
+    
     with open(f'{log_location}/{name}_config.yaml', 'w') as f:
-        yaml.safe_dump(config, f)
+        yaml.safe_dump(config_to_save, f)
 
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)

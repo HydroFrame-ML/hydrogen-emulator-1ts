@@ -39,7 +39,13 @@ def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
         timestep_loss = loss_fn(predictions[t], targets[t])
         total_loss += weights[t] * timestep_loss
     
+    # Check if this is a progressive loss function and normalize by n_timesteps
+    if hasattr(loss_fn, '_is_progressive') and loss_fn._is_progressive:
+        total_loss = total_loss / n_timesteps
+    
     return total_loss
+
+
 
 def train_epoch(
     model,
@@ -206,7 +212,10 @@ def train_model(
     callback_manager: Optional[CallbackManager] = None,
     device=DEVICE, 
     dtype=DTYPE,
-    autoregressive_loss_weights=None
+    autoregressive_loss_weights=None,
+    timestep_manager=None,
+    train_dataset=None,
+    val_dataset=None
 ):
     info(f"Starting model training for {max_epochs} epochs")
     verbose(f"Using device: {device}, dtype: {dtype}")
@@ -220,9 +229,24 @@ def train_model(
         callback_manager.on_train_begin({'model': model, 'optimizer': opt, 'scheduler': scheduler})
     
     for e in (bar := tqdm(range(max_epochs))):
+        # Check for progressive timestep update
+        if timestep_manager and timestep_manager.is_enabled():
+            new_timesteps = timestep_manager.update_timesteps(e)
+            if new_timesteps is not None:
+                # Update datasets with new timestep length
+                if train_dataset:
+                    train_dataset.update_timesteps(new_timesteps)
+                    info(f"Updated training dataset to {new_timesteps} timesteps")
+                if val_dataset:
+                    val_dataset.update_timesteps(new_timesteps)
+                    info(f"Updated validation dataset to {new_timesteps} timesteps")
+        
         # Callback: epoch begin
         if callback_manager:
-            callback_manager.on_epoch_begin(e, {'epoch': e})
+            epoch_begin_logs = {'epoch': e}
+            if timestep_manager:
+                epoch_begin_logs.update(timestep_manager.get_progression_info())
+            callback_manager.on_epoch_begin(e, epoch_begin_logs)
         
         # Make sure to turn on train mode here
         # so that we update parameters

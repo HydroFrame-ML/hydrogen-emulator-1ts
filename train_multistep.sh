@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --time=6:00:00
+#SBATCH --time=24:00:00
 
 # Load necessary modules here
 echo "Starting multi-timestep autoregressive training..."
@@ -17,7 +17,8 @@ echo "GPU: $CUDA_VISIBLE_DEVICES"
 
 python -m emulator_1ts.main \
     --mode train \
-    --config convnext_multistep_config.yaml \
+    --config progressive_timestep_config.yaml \
     --log-level verbose
 
+    #--config convnext_multistep_config.yaml \
 echo "Multi-timestep training completed."

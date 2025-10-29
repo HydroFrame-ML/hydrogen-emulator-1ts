@@ -219,48 +219,58 @@ class TensorBoardTracker(Callback):
         except Exception as e:
             error(f"Failed to log visualizations: {e}")
     
-    def _log_prediction_visualizations(self, epoch: int, predictions: torch.Tensor, 
+    def _log_prediction_visualizations(self, epoch: int, predictions: torch.Tensor,
                                      targets: torch.Tensor, logs: Dict[str, Any]):
         """Log prediction visualization images."""
         try:
             # Ensure tensors are on CPU
             predictions = predictions.cpu()
             targets = targets.cpu()
-            
+
+            # Check if this is autoregressive/multi-timestep data
+            # Multi-timestep shape: [n_timesteps, batch, channels, height, width]
+            # Single-timestep shape: [batch, channels, height, width]
+            if predictions.dim() == 5:
+                # Multi-timestep autoregressive: use the last timestep for visualization
+                verbose(f"Multi-timestep predictions detected: {predictions.shape}")
+                predictions = predictions[-1]  # Last timestep
+                targets = targets[-1]  # Last timestep
+                verbose(f"Using last timestep for visualization: {predictions.shape}")
+
             # Limit number of samples to avoid memory issues
             max_samples = min(self.max_images, predictions.shape[0])
-            
+
             # Timeseries plots for different channels
             for channel_idx in [0, predictions.shape[1]//2, predictions.shape[1]-1]:
                 if channel_idx < predictions.shape[1]:
                     fig = create_timeseries_plot(
-                        predictions[:max_samples], 
-                        targets[:max_samples], 
+                        predictions[:max_samples],
+                        targets[:max_samples],
                         channel_idx=channel_idx,
                         max_samples=3
                     )
                     self.writer.add_figure(f'Timeseries/channel_{channel_idx}', fig, epoch)
                     plt.close(fig)
-            
+
             # Spatial field plots
             for channel_idx in [0, predictions.shape[1]//2, predictions.shape[1]-1]:
                 if channel_idx < predictions.shape[1]:
                     fig = create_spatial_field_plot(
-                        predictions, 
-                        targets, 
+                        predictions,
+                        targets,
                         channel_idx=channel_idx,
                         sample_idx=0
                     )
                     self.writer.add_figure(f'Spatial_Fields/channel_{channel_idx}', fig, epoch)
                     plt.close(fig)
-            
+
             # Error distribution plots
             fig = create_error_distribution_plot(predictions, targets)
             self.writer.add_figure('Error_Distributions/all_channels', fig, epoch)
             plt.close(fig)
-            
+
             verbose(f"Prediction visualizations logged for epoch {epoch}")
-            
+
         except Exception as e:
             error(f"Failed to log prediction visualizations: {e}")
     
@@ -443,52 +453,62 @@ class TensorBoardTracker(Callback):
 def compute_channel_losses(predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
     """
     Compute loss for each channel separately.
-    
+
     Args:
-        predictions: Model predictions [batch, channels, height, width]
-        targets: Ground truth [batch, channels, height, width]
-    
+        predictions: Model predictions [batch, channels, height, width] or [n_timesteps, batch, channels, height, width]
+        targets: Ground truth [batch, channels, height, width] or [n_timesteps, batch, channels, height, width]
+
     Returns:
         Dictionary with channel losses
     """
     channel_losses = {}
-    
+
+    # Handle multi-timestep autoregressive data - use last timestep for metrics
+    if predictions.dim() == 5 and targets.dim() == 5:
+        predictions = predictions[-1]  # Last timestep
+        targets = targets[-1]  # Last timestep
+
     if predictions.dim() == 4 and targets.dim() == 4:
         n_channels = predictions.shape[1]
-        
+
         for i in range(n_channels):
             channel_loss = torch.nn.functional.mse_loss(
-                predictions[:, i], 
+                predictions[:, i],
                 targets[:, i]
             )
             channel_losses[f'loss_channel_{i}'] = channel_loss.item()
-    
+
     return channel_losses
 
 
-def compute_quantile_metrics(predictions: torch.Tensor, targets: torch.Tensor, 
+def compute_quantile_metrics(predictions: torch.Tensor, targets: torch.Tensor,
                            quantiles: List[float] = [0.1, 0.25, 0.5, 0.75, 0.9]) -> Dict[str, float]:
     """
     Compute quantile metrics of prediction errors.
-    
+
     Args:
-        predictions: Model predictions
-        targets: Ground truth
+        predictions: Model predictions [batch, channels, height, width] or [n_timesteps, batch, channels, height, width]
+        targets: Ground truth [batch, channels, height, width] or [n_timesteps, batch, channels, height, width]
         quantiles: List of quantiles to compute
-    
+
     Returns:
         Dictionary with quantile metrics
     """
+    # Handle multi-timestep autoregressive data - use last timestep for metrics
+    if predictions.dim() == 5 and targets.dim() == 5:
+        predictions = predictions[-1]  # Last timestep
+        targets = targets[-1]  # Last timestep
+
     errors = torch.abs(predictions - targets)
     quantile_metrics = {}
-    
+
     for q in quantiles:
         try:
             quantile_value = torch.quantile(errors, q)
             quantile_metrics[f'error_q{int(q*100)}'] = quantile_value.item()
         except Exception as e:
             error(f"Failed to compute quantile {q}: {e}")
-    
+
     return quantile_metrics
 
 
