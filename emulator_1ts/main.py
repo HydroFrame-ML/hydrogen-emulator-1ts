@@ -21,12 +21,13 @@ def read_config(config_path):
 
 
 def custom_collate(batch):
-    s, e, p, y = [], [], [], []
+    s, e, v, p, y = [], [], [], [], []
     for b in batch:
         s.append(b[0])
         e.append(b[1])
-        p.append(b[2])
-        y.append(b[3])
+        v.append(b[2])  # velocity
+        p.append(b[3])
+        y.append(b[4])
 
     s = torch.stack(s)
     p = torch.stack(p)
@@ -35,12 +36,14 @@ def custom_collate(batch):
     if len(e[0].shape) == 4:  # Multi-timestep: [n_timesteps, z, y, x]
         # Stack along batch dimension, keeping timestep dimension first
         e = torch.stack(e, dim=1)  # [n_timesteps, batch, z, y, x]
+        v = torch.stack(v, dim=1)  # [n_timesteps, batch, z, y, x]
         y = torch.stack(y, dim=1)  # [n_timesteps, batch, z, y, x]
     else:  # Single-timestep: [z, y, x]
         e = torch.stack(e)
+        v = torch.stack(v)
         y = torch.stack(y)
 
-    return s, e, p, y
+    return s, e, v, p, y
 
 
 def set_seed_all():
@@ -197,7 +200,7 @@ def train(
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
 
-    model = model.to(device='cpu')
+    #model = model.to(device='cpu')
 
     verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
@@ -263,7 +266,7 @@ def test(
         all_evaptrans = []
         all_scaled_states = []
         all_scaled_evaptrans = []
-
+        all_scaled_velocity = []
 
     verbose("Processing test batches")
 
@@ -275,7 +278,7 @@ def test(
 
     with torch.no_grad():
         for i, batch in enumerate(batch_iterator):
-            s, e, p, y = batch
+            s, e, v, p, y = batch
 
             if save_inputs:
                 all_states.append(s)
@@ -285,21 +288,24 @@ def test(
 
             s = s.to(device=device, non_blocking=True)
             e = e.to(device=device, non_blocking=True)
+            v = v.to(device=device, non_blocking=True)
             p = p.to(device=device, non_blocking=True)
             y = y.to(device=device, non_blocking=True)
 
             model.scale_pressure(s)
             model.scale_evaptrans(e)
+            model.scale_velocity(v)
             model.scale_statics(p)
             model.scale_pressure(y)
 
             if save_inputs:
                 all_scaled_states.append(s.cpu())
                 all_scaled_evaptrans.append(e.cpu())
+                all_scaled_velocity.append(v.cpu())
                 if i == 0:
                     all_scaled_parameters = p.cpu()
 
-            outputs = model(s, e, p)
+            outputs = model(s, e, v, p)
 
             # Unscale the outputs
             model.unscale_pressure(outputs)
@@ -312,8 +318,10 @@ def test(
     if save_inputs:
         all_states = torch.cat(all_states)
         all_evaptrans = torch.cat(all_evaptrans)
+        all_velocity = torch.cat(all_velocity)
         all_scaled_states = torch.cat(all_scaled_states)
         all_scaled_evaptrans = torch.cat(all_scaled_evaptrans)
+        all_scaled_velocity = torch.cat(all_scaled_velocity)
     all_outputs = torch.cat(all_outputs)
     all_targets = torch.cat(all_targets)
     info(f'All outputs shape: {all_outputs.shape}')
@@ -340,6 +348,11 @@ def test(
         verbose(f"Saving evapotranspiration to {evaptrans_filename}")
         torch.save(all_evaptrans, evaptrans_filename)
         info(f'Evapotranspiration saved to {evaptrans_filename}')
+        # Save the velocity
+        velocity_filename = f'{log_location}/{name}_velocity.pt'
+        verbose(f"Saving velocity to {velocity_filename}")
+        torch.save(all_velocity, velocity_filename)
+        info(f'Velocity saved to {velocity_filename}')
         # Save the parameters
         parameters_filename = f'{log_location}/{name}_parameters.pt'
         verbose(f"Saving parameters to {parameters_filename}")

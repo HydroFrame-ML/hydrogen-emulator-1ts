@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=train-ucrb
-#SBATCH --output=hydrogen-train-ucrb_%j.out
-#SBATCH --error=hydrogen-train-ucrb_%j.err
+#SBATCH --job-name=test_multistep
+#SBATCH --output=hydrogen-test-multistep_%j.out
+#SBATCH --error=hydrogen-test-multistep_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
@@ -13,6 +13,6 @@ module load hydrogen-shared
 
 python -m emulator_1ts.main \
     --mode test \
-    --config /home/ga6/workspace/model_training/UpperEel_box.wy2003_config.yaml \
+    --config /home/ga6/hydrogen-emulator-1ts/runs/UpperEel_box.wy2003_config.yaml \
     --log-level verbose \
     --save_inputs

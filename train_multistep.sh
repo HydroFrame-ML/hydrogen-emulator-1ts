@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
-#SBATCH --time=6:00:00
+#SBATCH --time=72:00:00
 
 # Load necessary modules here
 echo "Starting multi-timestep autoregressive training..."
@@ -14,6 +14,8 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Job Name: $SLURM_JOB_NAME"
 echo "Node: $SLURM_NODEID"
 echo "GPU: $CUDA_VISIBLE_DEVICES"
+
+module load hydrogen-shared
 
 python -m emulator_1ts.main \
     --mode train \

@@ -73,9 +73,10 @@ def train_epoch(
         if callback_manager:
             callback_manager.on_batch_begin(i, {'training': train})
         
-        state, evaptrans, params, y = batch
+        state, evaptrans, velocity, params, y = batch
         state = state.to(device=device, non_blocking=True)
         evaptrans = evaptrans.to(device, non_blocking=True)
+        velocity = velocity.to(device, non_blocking=True)
         params = params.to(device, non_blocking=True)
         y = y.to(device=device, non_blocking=True)
         
@@ -92,6 +93,9 @@ def train_epoch(
             # Scale evaptrans sequence
             for t in range(n_timesteps):
                 model.scale_evaptrans(evaptrans[t])
+            # Scale velocity sequence
+            for t in range(n_timesteps):
+                model.scale_velocity(velocity[t])
             # Scale target sequence
             for t in range(n_timesteps):
                 model.scale_pressure(y[t])
@@ -100,6 +104,7 @@ def train_epoch(
             y = y.squeeze()
             model.scale_pressure(state)
             model.scale_evaptrans(evaptrans)
+            model.scale_velocity(velocity)
             model.scale_statics(params)
             model.scale_pressure(y)
 
@@ -111,10 +116,10 @@ def train_epoch(
         if is_multistep:
             # Multi-timestep autoregressive prediction
             if train:
-                yhat = model.forward_autoregressive(state, evaptrans, params)
+                yhat = model.forward_autoregressive(state, evaptrans, velocity, params)
             else:
                 with torch.no_grad():
-                    yhat = model.forward_autoregressive(state, evaptrans, params)
+                    yhat = model.forward_autoregressive(state, evaptrans, velocity, params)
                     
             if torch.isnan(yhat).any():
                 error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
@@ -126,10 +131,10 @@ def train_epoch(
         else:
             # Single-timestep prediction (backward compatibility)  
             if train:
-                yhat = model(state, evaptrans, params).squeeze()
+                yhat = model(state, evaptrans, velocity, params).squeeze()
             else:
                 with torch.no_grad():
-                    yhat = model(state, evaptrans, params).squeeze()
+                    yhat = model(state, evaptrans, velocity, params).squeeze()
                     
             if torch.isnan(yhat).any():
                 error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")

@@ -207,6 +207,22 @@ class ResNet(torch.nn.Module):
             mu = self.scalers[name][0]
             sigma = self.scalers[name][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
+    
+    @torch.jit.export
+    def scale_velocity(self, x):
+        # Dims are (batch, 3*z, y, x)
+        for i in range(x.shape[1]):
+            mu = self.scalers[f'vel_diff_{i}'][0]
+            sigma = self.scalers[f'vel_diff_{i}'][1]
+            x[:, i, :, :] = (x[:, i, :, :] - mu) / sigma
+
+    @torch.jit.export
+    def unscale_velocity(self, x):
+        # Dims are (batch, 3*z, y, x)
+        for i in range(x.shape[1]):
+            mu = self.scalers[f'vel_diff_{i}'][0]
+            sigma = self.scalers[f'vel_diff_{i}'][1]
+            x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
     @torch.jit.export
     def get_parflow_statics(self, statics:Dict[str, torch.Tensor]):
@@ -244,22 +260,23 @@ class ResNet(torch.nn.Module):
             sigma = self.scalers[name][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
-    def forward(self, pressure, evaptrans, statics):
+    def forward(self, pressure, evaptrans, velocity, statics):
         # Concatenate the data
-        x = torch.cat([pressure, evaptrans, statics], dim=1)
+        x = torch.cat([pressure, evaptrans, velocity, statics], dim=1)
 
         for l in self.layers:
             x = l(x)
 
         return x
     
-    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, statics):
+    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, velocity_sequence, statics):
         """
         Autoregressive forward pass for multi-timestep prediction.
         
         Args:
             initial_pressure: Initial pressure state [batch, z, y, x]
             evaptrans_sequence: Evapotranspiration sequence [n_timesteps, batch, z, y, x]
+            velocity_sequence: Velocity sequence [n_timesteps, batch, 3*z, y, x]
             statics: Static parameters [batch, n_params, y, x]
             
         Returns:
@@ -273,11 +290,12 @@ class ResNet(torch.nn.Module):
         current_state = initial_pressure
         
         for t in range(n_timesteps):
-            # Get evapotranspiration for current timestep
+            # Get evapotranspiration and velocity for current timestep
             current_evaptrans = evaptrans_sequence[t]
+            current_velocity = velocity_sequence[t]
             
             # Predict next state
-            next_state = self.forward(current_state, current_evaptrans, statics)
+            next_state = self.forward(current_state, current_evaptrans, current_velocity, statics)
             predictions.append(next_state)
             
             # Use prediction as input for next timestep
@@ -452,6 +470,22 @@ class ConvNeXT(torch.nn.Module):
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
     @torch.jit.export
+    def scale_velocity(self, x):
+        # Dims are (batch, 3*z, y, x)
+        for i in range(x.shape[1]):
+            mu = self.scalers[f'vel_diff_{i}'][0]
+            sigma = self.scalers[f'vel_diff_{i}'][1]
+            x[:, i, :, :] = (x[:, i, :, :] - mu) / sigma
+
+    @torch.jit.export
+    def unscale_velocity(self, x):
+        # Dims are (batch, 3*z, y, x)
+        for i in range(x.shape[1]):
+            mu = self.scalers[f'vel_diff_{i}'][0]
+            sigma = self.scalers[f'vel_diff_{i}'][1]
+            x[:, i, :, :] = x[:, i, :, :] * sigma + mu
+    
+    @torch.jit.export
     def get_parflow_statics(self, statics:Dict[str, torch.Tensor]):
         parameter_data = []
         for (parameter, n_lay) in zip(self.parameter_list, self.param_nlayer):
@@ -487,9 +521,9 @@ class ConvNeXT(torch.nn.Module):
             sigma = self.scalers[name][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
-    def forward(self, pressure, evaptrans, statics):
+    def forward(self, pressure, evaptrans, velocity, statics):
         # Concatenate the data
-        x = torch.cat([pressure, evaptrans, statics], dim=1)
+        x = torch.cat([pressure, evaptrans, velocity, statics], dim=1)
         # Add small noise to the input to help with stability
         if self.training:
             x = x + torch.randn_like(x) * self.noise_scale
@@ -499,13 +533,14 @@ class ConvNeXT(torch.nn.Module):
 
         return x + pressure
     
-    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, statics):
+    def forward_autoregressive(self, initial_pressure, evaptrans_sequence, velocity_sequence, statics):
         """
         Autoregressive forward pass for multi-timestep prediction.
         
         Args:
             initial_pressure: Initial pressure state [batch, z, y, x]
             evaptrans_sequence: Evapotranspiration sequence [n_timesteps, batch, z, y, x]
+            velocity_sequence: Velocity sequence [n_timesteps, batch, 3*z, y, x]
             statics: Static parameters [batch, n_params, y, x]
             
         Returns:
@@ -519,11 +554,12 @@ class ConvNeXT(torch.nn.Module):
         current_state = initial_pressure
         
         for t in range(n_timesteps):
-            # Get evapotranspiration for current timestep
+            # Get evapotranspiration and velocity for current timestep
             current_evaptrans = evaptrans_sequence[t]
+            current_velocity = velocity_sequence[t]
             
             # Predict next state
-            next_state = self.forward(current_state, current_evaptrans, statics)
+            next_state = self.forward(current_state, current_evaptrans, current_velocity, statics)
             predictions.append(next_state)
             
             # Use prediction as input for next timestep

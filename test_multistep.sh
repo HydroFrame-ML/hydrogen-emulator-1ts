@@ -15,9 +15,12 @@ echo "Job Name: $SLURM_JOB_NAME"
 echo "Node: $SLURM_NODEID"
 echo "GPU: $CUDA_VISIBLE_DEVICES"
 
+module load hydrogen-shared
+
 python -m emulator_1ts.main \
-    --mode train \
-    --config test_multistep_config.yaml \
-    --log-level verbose
+    --mode test \
+    --config /home/ga6/hydrogen-emulator-1ts/runs/PFCLM_3D_TB_34335_1_1_config.yaml \
+    --log-level verbose \
+    --save_inputs
 
 echo "Multi-timestep training test completed."
