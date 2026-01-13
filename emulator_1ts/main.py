@@ -197,7 +197,7 @@ def train(
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
 
-    model = model.to(device='cpu')
+    #model = model.to(device='cpu')
 
     verbose(f"Saving model weights to {weights_filename}")
     torch.save(model.state_dict(), weights_filename)
