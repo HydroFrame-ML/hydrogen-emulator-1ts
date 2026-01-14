@@ -232,21 +232,39 @@ class ParFlowDataset(Dataset):
             evaptrans_sequence = np.zeros((1, abs(self.n_evaptrans), y_max-y_min+1, x_max-x_min+1))
 
         # Read velocity sequence (for t+1, t+2, ...)
-        velx_sequence_raw = read_pfb_sequence(velx_file_sequence, keys=patch_keys)
-        vely_sequence_raw = read_pfb_sequence(vely_file_sequence, keys=patch_keys)
+        # Create modified patch_keys for velocity files that have extra layers
+        # velx needs one extra element in x direction
+        velx_patch_keys = {
+            'x': {'start': x_min, 'stop': x_max+2},  # +2 instead of +1 to include extra layer
+            'y': {'start': y_min, 'stop': y_max+1},
+        }
+        # vely needs one extra element in y direction
+        vely_patch_keys = {
+            'x': {'start': x_min, 'stop': x_max+1},
+            'y': {'start': y_min, 'stop': y_max+2},  # +2 instead of +1 to include extra layer
+        }
+        # velz uses same patch_keys (extra layer is in z, handled by diff)
+        velx_sequence_raw = read_pfb_sequence(velx_file_sequence, keys=velx_patch_keys)
+        vely_sequence_raw = read_pfb_sequence(vely_file_sequence, keys=vely_patch_keys)
         velz_sequence_raw = read_pfb_sequence(velz_file_sequence, keys=patch_keys)
 
-        # Concatenate velx, vely, velz along channel dimension for each timestep
+        # Calculate differences across each dimension to normalize all velocities to same x,y dimensions
+        # velx: (z, y, x + 1) with extra layer in x -> diff along x (axis=2) -> (z, y, x)
+        # vely: (z, y + 1, x) with extra layer in y -> diff along y (axis=1) -> (z, y, x)
+        # velz: (z + 1, y, x) with extra layer in z -> diff along z (axis=0) -> (z, y, x)
         velocity_sequence = []
         for t in range(len(velx_sequence_raw)):
-            velx_t = velx_sequence_raw[t]  # Shape: (z, y, x)
-            vely_t = vely_sequence_raw[t]  # Shape: (z, y, x)
-            velz_t = velz_sequence_raw[t]  # Shape: (z, y, x)
-            print(f"velx_t shape: {velx_t.shape}, vely_t shape: {vely_t.shape}, velz_t shape: {velz_t.shape}")
-            # Concatenate along channel dimension: (z, y, x) -> (3*z, y, x) or stack as (3, z, y, x) then reshape
-            # Following the pattern, we'll concatenate along first dimension: (3*z, y, x)
+            velx_t = velx_sequence_raw[t]  # Shape: (z, y, x + 1) e.g. (25, 25, 26)
+            vely_t = vely_sequence_raw[t]  # Shape: (z, y + 1, x) e.g. (25, 26, 25)
+            velz_t = velz_sequence_raw[t]  # Shape: (z + 1, y, x) e.g. (26, 25, 25)
+            
+            # Calculate differences along the dimension with extra layer
+            velx_t = np.diff(velx_t, axis=2)  # Diff along x: (z, y, x + 1) -> (z, y, x) e.g. (25, 25, 25)
+            vely_t = np.diff(vely_t, axis=1)  # Diff along y: (z, y + 1, x) -> (z, y, x) e.g. (25, 25, 25)
+            velz_t = np.diff(velz_t, axis=0)  # Diff along z: (z + 1, y, x) -> (z, y, x) e.g. (25, 25, 25)
+            
+            # Concatenate along channel dimension: (z, y, x) -> (3*z, y, x)
             velocity_combined = np.concatenate([velx_t, vely_t, velz_t], axis=0)
-            print(f"velocity_combined shape: {velocity_combined.shape}")
             velocity_sequence.append(velocity_combined)
         velocity_sequence = np.array(velocity_sequence)
 
