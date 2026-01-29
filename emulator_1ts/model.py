@@ -209,6 +209,12 @@ class ResNet(torch.nn.Module):
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
     
     @torch.jit.export
+    def get_parflow_velocities(self, velocity):
+        velocity = velocity.unsqueeze(0)
+        self.scale_velocity(velocity)
+        return velocity
+
+    @torch.jit.export
     def scale_velocity(self, x):
         # Dims are (batch, 3*z, y, x)
         for i in range(x.shape[1]):
@@ -468,6 +474,12 @@ class ConvNeXT(torch.nn.Module):
             mu = self.scalers[name][0]
             sigma = self.scalers[name][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
+
+    @torch.jit.export
+    def get_parflow_velocities(self, velocity):
+        velocity = velocity.unsqueeze(0)
+        self.scale_velocity(velocity)
+        return velocity
 
     @torch.jit.export
     def scale_velocity(self, x):

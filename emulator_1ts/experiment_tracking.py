@@ -156,18 +156,20 @@ class TensorBoardTracker(Callback):
         try:
             if self.model:
                 # Create dummy input to trace the model
-                # Assuming the model expects (state, evaptrans, params)
+                # The model expects (pressure, evaptrans, velocity, statics)
                 dummy_state = torch.randn(1, 10, 32, 32)  # Adjust dimensions as needed
                 dummy_evaptrans = torch.randn(1, 4, 32, 32)  # Adjust based on n_evaptrans
+                dummy_velocity = torch.randn(1, 30, 32, 32)  # velocity has 3*z channels (3*10=30)
                 dummy_params = torch.randn(1, 37, 32, 32)  # Adjust based on parameter count
                 
                 # Move to same device as model
                 device = next(self.model.parameters()).device
                 dummy_state = dummy_state.to(device)
                 dummy_evaptrans = dummy_evaptrans.to(device)
+                dummy_velocity = dummy_velocity.to(device)
                 dummy_params = dummy_params.to(device)
                 
-                self.writer.add_graph(self.model, (dummy_state, dummy_evaptrans, dummy_params))
+                self.writer.add_graph(self.model, (dummy_state, dummy_evaptrans, dummy_velocity, dummy_params))
                 verbose("Model graph logged to TensorBoard")
                 
         except Exception as e:
