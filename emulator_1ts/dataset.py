@@ -203,9 +203,9 @@ class ParFlowDataset(Dataset):
         # Construct file sequences for pressure, evaptrans, and velocity
         pressure_file_sequence = [self.pressure_files[i] for i in time_indices]
         evaptrans_file_sequence = [self.evaptrans_files[i] for i in time_indices[1:]]  # Skip first for evaptrans (t+1, t+2, ...)
-        velx_file_sequence = [self.velx_files[i] for i in time_indices] 
-        vely_file_sequence = [self.vely_files[i] for i in time_indices] 
-        velz_file_sequence = [self.velz_files[i] for i in time_indices]
+        velx_file_sequence = [self.velx_files[i] for i in time_indices[1:]] 
+        vely_file_sequence = [self.vely_files[i] for i in time_indices[1:]] 
+        velz_file_sequence = [self.velz_files[i] for i in time_indices[1:]]
 
         # Read pressure sequence (initial state + targets)
         pressure_sequence = read_pfb_sequence(pressure_file_sequence, keys=patch_keys)
