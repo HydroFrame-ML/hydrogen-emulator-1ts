@@ -264,6 +264,7 @@ def test(
     if save_inputs:
         all_states = []
         all_evaptrans = []
+        all_velocity = []
         all_scaled_states = []
         all_scaled_evaptrans = []
         all_scaled_velocity = []
@@ -283,6 +284,7 @@ def test(
             if save_inputs:
                 all_states.append(s)
                 all_evaptrans.append(e)
+                all_velocity.append(v)
                 if i == 0:
                     all_parameters = p
 
@@ -304,7 +306,6 @@ def test(
                 all_scaled_velocity.append(v.cpu())
                 if i == 0:
                     all_scaled_parameters = p.cpu()
-
             outputs = model(s, e, v, p)
 
             # Unscale the outputs
