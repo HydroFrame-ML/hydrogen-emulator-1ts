@@ -1,0 +1,85 @@
+name: PFCLM_3D_TB_34335_1_1
+log_location: /home/ga6/hydrogen-emulator-1ts/runs/
+model_type: convnext # fixed for now
+optimizer: adam # fixed for now
+loss: mse # fixed for now
+n_epochs: 500 # small for testing
+batch_size: 64 # reduced batch size for memory with multi-timestep
+lr: 0.0001
+num_workers: 16
+dtype: float64
+device: cuda:0
+set_seed: true
+
+data_def:
+  train_data_location: /scratch/network/ga6/1ts_idealized_runs/seed_34335_P1_Q1_topo_flat_sigma_1_7/
+  #validation_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
+  test_data_location: /scratch/network/ga6/1ts_idealized_runs/seed_34335_P1_Q1_topo_flat_sigma_1_7/
+  parameters:
+    - [perm_x, 0]
+  patch_size_x: 25
+  patch_size_y: 25
+  overlap_x: 0
+  overlap_y: 0
+  n_evaptrans: 25
+  n_timesteps: 12  # Predict 3 timesteps ahead (t+1, t+2, t+3)
+  shuffle: False
+
+model_def:
+  in_channels: 150 # Number of input channels from state_data
+  out_channels: 25 # Number of output channels (depth layers)
+  kernel_size: 3 # Kernel size for the convolutional layers
+  bottleneck_dim: 48
+  hidden_dim: 96 # Number of filters in the convolutional layers
+  depth: 1 # Number of resnet blocks
+
+# Multi-timestep autoregressive training configuration
+autoregressive:
+  # Optional: Custom loss weights for each timestep
+  # If not specified, equal weighting is used
+  # Example: [1.0, 0.8, 0.6] - decreasing weight for later timesteps
+  # loss_weights: [1.0, 0.8, 0.6]
+
+tensorboard:
+  enabled: true
+  log_hyperparams: true
+  log_model_graph: true
+  log_images: true
+  log_frequency: 5  # Log images every 5 epochs
+  max_images: 3
+
+callbacks:
+  # Early stopping
+  early_stopping:
+    enabled: false
+    monitor: 'val_loss'
+    patience: 15
+    min_delta: 1e-6
+    mode: 'min'
+    restore_best_weights: true
+
+  # Model checkpointing
+  model_checkpoint:
+    enabled: false
+    monitor: 'val_loss'
+    save_best_only: true
+    save_weights_only: false
+    mode: 'min'
+    save_top_k: 3
+    verbose: true
+
+  # Learning rate scheduling
+  lr_scheduler:
+    enabled: true
+    type: 'ReduceLROnPlateau'
+    mode: 'min'
+    factor: 0.6
+    patience: 5
+    min_lr: 1e-7
+    verbose: true
+
+  # Gradient clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+    norm_type: 2.0
