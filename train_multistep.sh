@@ -4,9 +4,10 @@
 #SBATCH --error=train-multistep_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:2
 #SBATCH --mem=128G
-#SBATCH --time=6:00:00
+#SBATCH --time=01:00:00
 
 # Load necessary modules here
 echo "Starting multi-timestep autoregressive training..."
@@ -15,7 +16,9 @@ echo "Job Name: $SLURM_JOB_NAME"
 echo "Node: $SLURM_NODEID"
 echo "GPU: $CUDA_VISIBLE_DEVICES"
 
-python -m emulator_1ts.main \
+module load hydrogen-shared
+
+torchrun --standalone --nproc_per_node=2 -m emulator_1ts.main \
     --mode train \
     --config convnext_multistep_config.yaml \
     --log-level verbose

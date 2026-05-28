@@ -3,8 +3,8 @@ log_location: /home/ga6/hydrogen-emulator-1ts/runs
 model_type: convnext # fixed for now
 optimizer: adam # fixed for now
 loss: mse # fixed for now
-n_epochs: 100 # small for testing
-batch_size: 32 #128 # reduced batch size for memory with multi-timestep
+n_epochs: 3 #300  # small for testing
+batch_size: 64 # reduced batch size for memory with multi-timestep
 lr: 0.001
 num_workers: 16
 dtype: float64
@@ -12,9 +12,9 @@ device: cuda:0
 set_seed: true
 
 data_def:
-  train_data_location: /scratch/network/ga6/1ts_training/New_Ohio_Box/Ohio_box/no_emulator/
+  train_data_location: /scratch/network/ga6/1ts_training/Upper_Eel_box/ #/scratch/network/ga6/1ts_training/New_Ohio_Box/Ohio_box/no_emulator/
   #validation_data_location: /scratch/network/reedmm/1ts_training/Upper_Eel_box/
-  test_data_location: /scratch/network/ga6/1ts_training/New_Ohio_Box/Ohio_box/no_emulator/
+  test_data_location: /scratch/network/ga6/1ts_training/Upper_Eel_box/ #/scratch/network/ga6/1ts_training/New_Ohio_Box/Ohio_box/no_emulator/
   parameters:
     - [alpha, 0]
     - [n, 0]
@@ -28,12 +28,12 @@ data_def:
     - [specific_storage, 0]
     - [sres, 0]
     - [ssat, 0]
-  patch_size_x: 72 #100 #64
-  patch_size_y: 86 #100 #62
+  patch_size_x: 64 #72 #100
+  patch_size_y: 62 #86 #100
   overlap_x: 0
   overlap_y: 0
   n_evaptrans: 5
-  n_timesteps: 10  # Predict 3 timesteps ahead (t+1, t+2, t+3)
+  n_timesteps: 24  # Predict 3 timesteps ahead (t+1, t+2, t+3)
   shuffle: False
 
 model_def:
@@ -42,7 +42,7 @@ model_def:
   kernel_size: 3 # Kernel size for the convolutional layers
   bottleneck_dim: 48
   hidden_dim: 96 # Number of filters in the convolutional layers
-  depth: 5 # Number of resnet blocks
+  depth: 1 # Number of resnet blocks
 
 # Multi-timestep autoregressive training configuration
 autoregressive:

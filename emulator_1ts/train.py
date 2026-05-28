@@ -1,7 +1,8 @@
 import torch
+import torch.distributed as dist
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from .logger import info, verbose, error, get_log_level, LogLevel
 from .utils import compute_channel_losses, compute_quantile_metrics
 from .callbacks import CallbackManager
@@ -9,6 +10,19 @@ from .callbacks import CallbackManager
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DTYPE = torch.float64
+
+
+def _sync_weighted_loss(weighted_sum: float, n_samples: float, device: torch.device) -> float:
+    """All-reduce weighted loss sums for a correct global mean when using DDP."""
+    if not dist.is_available() or not dist.is_initialized():
+        return weighted_sum / max(n_samples, 1)
+    t = torch.tensor([weighted_sum, n_samples], device=device, dtype=torch.float64)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return (t[0] / max(t[1], 1)).item()
+
+
+def _batch_size_from_state(state: torch.Tensor) -> int:
+    return int(state.shape[0])
 
 def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
     """
@@ -46,23 +60,25 @@ def train_epoch(
     dataset,
     optimizer,
     loss_fn,
-    device,
+    device: Union[str, torch.device],
     callback_manager: Optional[CallbackManager] = None,
     train=True,
     autoregressive_loss_weights=None,
+    rank: int = 0,
 ):
     # Trains 1 epoch
     prefix = 'train' if train else 'val'
-    verbose(f"Starting {'training' if train else 'validation'} epoch")
-    
-    # Use tqdm progress bar only in verbose mode
-    is_verbose = get_log_level() == LogLevel.VERBOSE
-    
-    # Wrap dataset with tqdm if in verbose mode
+    device_t = torch.device(device) if not isinstance(device, torch.device) else device
+    raw_model = model.module if hasattr(model, "module") else model
+    is_main = rank == 0
+    if is_main:
+        verbose(f"Starting {'training' if train else 'validation'} epoch")
+    # Use tqdm progress bar only in verbose mode on rank 0
+    is_verbose = get_log_level() == LogLevel.VERBOSE and is_main
     data_iterator = tqdm(dataset, desc=f"{'Training' if train else 'Validation'} batch") if is_verbose else dataset
-    
-    epoch_loss = 0.0
-    num_batches = 0
+
+    weighted_loss = 0.0
+    total_samples = 0.0
     
     # Store sample predictions for visualization
     sample_predictions = None
@@ -74,10 +90,10 @@ def train_epoch(
             callback_manager.on_batch_begin(i, {'training': train})
         
         state, evaptrans, params, y = batch
-        state = state.to(device=device, non_blocking=True)
-        evaptrans = evaptrans.to(device, non_blocking=True)
-        params = params.to(device, non_blocking=True)
-        y = y.to(device=device, non_blocking=True)
+        state = state.to(device=device_t, non_blocking=True)
+        evaptrans = evaptrans.to(device_t, non_blocking=True)
+        params = params.to(device_t, non_blocking=True)
+        y = y.to(device=device_t, non_blocking=True)
         
         # Detect multi-timestep vs single-timestep based on target shape
         is_multistep = len(y.shape) == 5  # [n_timesteps, batch, z, y, x]
@@ -87,34 +103,36 @@ def train_epoch(
             n_timesteps = y.shape[0]
             
             # Scale data
-            model.scale_pressure(state)
-            model.scale_statics(params)
+            raw_model.scale_pressure(state)
+            raw_model.scale_statics(params)
             # Scale evaptrans sequence
             for t in range(n_timesteps):
-                model.scale_evaptrans(evaptrans[t])
+                raw_model.scale_evaptrans(evaptrans[t])
             # Scale target sequence
             for t in range(n_timesteps):
-                model.scale_pressure(y[t])
+                raw_model.scale_pressure(y[t])
         else:
             # Single-timestep training (backward compatibility)
             y = y.squeeze()
-            model.scale_pressure(state)
-            model.scale_evaptrans(evaptrans)
-            model.scale_statics(params)
-            model.scale_pressure(y)
+            raw_model.scale_pressure(state)
+            raw_model.scale_evaptrans(evaptrans)
+            raw_model.scale_statics(params)
+            raw_model.scale_pressure(y)
 
-        if not len(state): 
+        if not len(state):
             continue
-            
+
+        batch_n = _batch_size_from_state(state)
+
         optimizer.zero_grad()
         
         if is_multistep:
             # Multi-timestep autoregressive prediction
             if train:
-                yhat = model.forward_autoregressive(state, evaptrans, params)
+                yhat = raw_model.forward_autoregressive(state, evaptrans, params)
             else:
                 with torch.no_grad():
-                    yhat = model.forward_autoregressive(state, evaptrans, params)
+                    yhat = raw_model.forward_autoregressive(state, evaptrans, params)
                     
             if torch.isnan(yhat).any():
                 error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
@@ -151,31 +169,31 @@ def train_epoch(
             if callback_manager:
                 callback_manager.on_batch_end(i, {'training': train, 'loss': loss.item()})
         
-        epoch_loss += loss.item()
-        num_batches += 1
-        
-        # Store first batch for visualization (validation only)
-        if not train and i == 0:
+        weighted_loss += loss.item() * batch_n
+        total_samples += batch_n
+
+        # Store first batch for visualization (validation only, rank 0)
+        if not train and i == 0 and is_main:
             # Unscale for visualization
             if is_multistep:
                 # Unscale sequence predictions and targets
                 yhat_viz = yhat.clone()
                 y_viz = y.clone()
                 for t in range(n_timesteps):
-                    model.unscale_pressure(yhat_viz[t])
-                    model.unscale_pressure(y_viz[t])
+                    raw_model.unscale_pressure(yhat_viz[t])
+                    raw_model.unscale_pressure(y_viz[t])
                 sample_predictions = yhat_viz.detach().cpu()
                 sample_targets = y_viz.detach().cpu()
             else:
                 # Single-timestep unscaling
                 yhat_viz = yhat.clone()
                 y_viz = y.clone()
-                model.unscale_pressure(yhat_viz)
-                model.unscale_pressure(y_viz)
+                raw_model.unscale_pressure(yhat_viz)
+                raw_model.unscale_pressure(y_viz)
                 sample_predictions = yhat_viz.detach().cpu()
                 sample_targets = y_viz.detach().cpu()
     
-    avg_loss = epoch_loss / max(num_batches, 1)
+    avg_loss = _sync_weighted_loss(weighted_loss, total_samples, device_t)
     
     # Compute additional metrics for validation
     metrics = {f'{prefix}_loss': avg_loss}
@@ -196,20 +214,25 @@ def train_epoch(
     return pd.Series(metrics)
 
 def train_model(
-    model, 
-    train_dl, 
-    opt, 
-    loss_fun, 
+    model,
+    train_dl,
+    opt,
+    loss_fun,
     max_epochs,
     scheduler=None,
-    val_dl=None, 
+    val_dl=None,
     callback_manager: Optional[CallbackManager] = None,
-    device=DEVICE, 
+    device=DEVICE,
     dtype=DTYPE,
-    autoregressive_loss_weights=None
+    autoregressive_loss_weights=None,
+    train_sampler=None,
+    val_sampler=None,
+    rank: int = 0,
 ):
-    info(f"Starting model training for {max_epochs} epochs")
-    verbose(f"Using device: {device}, dtype: {dtype}")
+    is_main = rank == 0
+    if is_main:
+        info(f"Starting model training for {max_epochs} epochs")
+        verbose(f"Using device: {device}, dtype: {dtype}")
     
     # Initialize training logs
     train_df = pd.DataFrame()
@@ -219,27 +242,36 @@ def train_model(
     if callback_manager:
         callback_manager.on_train_begin({'model': model, 'optimizer': opt, 'scheduler': scheduler})
     
-    for e in (bar := tqdm(range(max_epochs))):
+    epoch_range = range(max_epochs)
+    bar = tqdm(epoch_range, disable=not is_main)
+    for e in bar:
+        if train_sampler is not None:
+            train_sampler.set_epoch(e)
+        if val_sampler is not None:
+            val_sampler.set_epoch(e)
+
         # Callback: epoch begin
         if callback_manager:
             callback_manager.on_epoch_begin(e, {'epoch': e})
-        
+
         # Make sure to turn on train mode here
         # so that we update parameters
         model.train()
         train_metrics = train_epoch(
-            model, 
-            train_dl, 
-            opt, 
-            loss_fun, 
-            callback_manager=callback_manager, 
-            train=True, 
+            model,
+            train_dl,
+            opt,
+            loss_fun,
+            callback_manager=callback_manager,
+            train=True,
             device=device,
-            autoregressive_loss_weights=autoregressive_loss_weights
+            autoregressive_loss_weights=autoregressive_loss_weights,
+            rank=rank,
         )
         train_df = train_df._append(train_metrics, ignore_index=True)
         tl = train_metrics['train_loss']
-        info(f"Epoch {e+1}/{max_epochs} - Train loss: {tl:0.4e}")
+        if is_main:
+            info(f"Epoch {e+1}/{max_epochs} - Train loss: {tl:0.4e}")
 
         # Prepare epoch logs
         epoch_logs = {'train_loss': tl, 'epoch': e}
@@ -249,18 +281,20 @@ def train_model(
             # the memory/computational cost
             model.eval()
             valid_metrics = train_epoch(
-                model, 
-                val_dl, 
-                opt, 
-                loss_fun, 
-                callback_manager=callback_manager, 
-                train=False, 
+                model,
+                val_dl,
+                opt,
+                loss_fun,
+                callback_manager=callback_manager,
+                train=False,
                 device=device,
-                autoregressive_loss_weights=autoregressive_loss_weights
+                autoregressive_loss_weights=autoregressive_loss_weights,
+                rank=rank,
             )
             valid_df = valid_df._append(valid_metrics, ignore_index=True)
             vl = valid_metrics['val_loss']
-            info(f"Epoch {e+1}/{max_epochs} - Validation loss: {vl:0.4e}")
+            if is_main:
+                info(f"Epoch {e+1}/{max_epochs} - Validation loss: {vl:0.4e}")
 
             # Add validation metrics to epoch logs
             epoch_logs['val_loss'] = vl
@@ -330,5 +364,6 @@ def train_model(
 
     if val_dl is not None:
         train_df['val_loss'] = valid_df['val_loss']
-    info("Training completed")
+    if is_main:
+        info("Training completed")
     return train_df
