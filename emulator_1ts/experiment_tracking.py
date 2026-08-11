@@ -157,9 +157,17 @@ class TensorBoardTracker(Callback):
             if self.model:
                 # Create dummy input to trace the model
                 # Assuming the model expects (state, evaptrans, params)
-                dummy_state = torch.randn(1, 10, 32, 32)  # Adjust dimensions as needed
-                dummy_evaptrans = torch.randn(1, 4, 32, 32)  # Adjust based on n_evaptrans
-                dummy_params = torch.randn(1, 37, 32, 32)  # Adjust based on parameter count
+                height = getattr(self.model, 'input_height', 32)
+                width = getattr(self.model, 'input_width', 32)
+                n_pressure = len(getattr(self.model, 'pressure_names', [])) or 10
+                n_evaptrans = len(getattr(self.model, 'evaptrans_names', [])) or 4
+                n_statics = len(getattr(self.model, 'param_names', [])) or 37
+                dummy_state = torch.randn(1, n_pressure, height, width)
+                dummy_evaptrans = torch.randn(1, n_evaptrans, height, width)
+                dummy_params = torch.randn(1, n_statics, height, width)
+                param_names = getattr(self.model, 'param_names', [])
+                if 'mask' in param_names:
+                    dummy_params[:, param_names.index('mask')] = 1
                 
                 # Move to same device as model
                 device = next(self.model.parameters()).device

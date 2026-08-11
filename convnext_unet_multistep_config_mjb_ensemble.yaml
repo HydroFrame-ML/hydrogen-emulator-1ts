@@ -1,0 +1,108 @@
+name: mjb-ensemble-convnext-unet-multistep
+log_location: /home/andrbenn/workspace/1ts_emulator/hydrogen-emulator-1ts/runs
+model_type: convnext_unet
+optimizer: adam
+loss: mse
+n_epochs: 10
+batch_size: 4
+lr: 0.001
+num_workers: 16
+dtype: float32
+device: cuda:7
+set_seed: true
+
+data_def:
+  train_data_location: /home/andrbenn/workspace/1ts_emulator/data/mjb/ensemble
+  validation_data_location: /home/andrbenn/workspace/1ts_emulator/data/mjb/ensemble
+  test_data_location: /home/andrbenn/workspace/1ts_emulator/data/mjb/ensemble
+  run_name: mjb
+
+  # Split by complete members to prevent static and temporal leakage.
+  train_member_ids: ['0000', '0001', '0002', '0003', '0004', '0005', '0006']
+  validation_member_ids: ['0007']
+  test_member_ids: ['0008', '0009']
+
+  parameters:
+    - [alpha, 0]
+    - [n, 0]
+    - [slope_x, 0]
+    - [slope_y, 0]
+    - [perm_x, 0]
+    - [perm_y, 0]
+    - [perm_z, 0]
+    - [porosity, 0]
+    - [mannings, 0]
+    - [specific_storage, 0]
+    - [sres, 0]
+    - [ssat, 0]
+    - [mask, 0]
+
+  # The model derives its input dimensions and downsampling schedule from
+  # these patch dimensions; neither dimension is embedded in the model code.
+  patch_size_x: 107
+  patch_size_y: 89
+  overlap_x: 0
+  overlap_y: 0
+
+  n_evaptrans: -4
+  n_timesteps: 10
+  shuffle: False
+
+model_def:
+  # 10 pressure + 4 evaptrans + 94 static channels, including the binary mask.
+  in_channels: 108
+  out_channels: 10
+  base_channels: 32
+  channel_multipliers: [1, 2, 4, 4, 4]
+  blocks_per_level: [1, 1, 1, 1, 2]
+  max_levels: 4
+  min_coarse_cells: 8
+  downsample_mode: auto
+  bottleneck_ratio: 0.5
+  kernel_size: 3
+  padding_mode: replicate
+  noise_scale: 1.0e-6
+
+autoregressive:
+  # Equal weighting is used when loss_weights is omitted.
+  # loss_weights: [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+
+tensorboard:
+  enabled: true
+  log_hyperparams: true
+  log_model_graph: true
+  log_images: true
+  log_frequency: 1
+  max_images: 3
+
+callbacks:
+  early_stopping:
+    enabled: false
+    monitor: 'val_loss'
+    patience: 15
+    min_delta: 1e-6
+    mode: 'min'
+    restore_best_weights: true
+
+  model_checkpoint:
+    enabled: false
+    monitor: 'val_loss'
+    save_best_only: true
+    save_weights_only: false
+    mode: 'min'
+    save_top_k: 3
+    verbose: true
+
+  lr_scheduler:
+    enabled: true
+    type: 'ReduceLROnPlateau'
+    mode: 'min'
+    factor: 0.6
+    patience: 5
+    min_lr: 1e-7
+    verbose: true
+
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+    norm_type: 2.0

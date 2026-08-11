@@ -3,20 +3,36 @@ import pandas as pd
 from tqdm import tqdm
 from typing import Optional, Dict, Any
 from .logger import info, verbose, error, get_log_level, LogLevel
-from .utils import compute_channel_losses, compute_quantile_metrics
+from .utils import (
+    compute_boundary_losses,
+    compute_channel_losses,
+    compute_quantile_metrics,
+)
 from .callbacks import CallbackManager
 
 
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 DTYPE = torch.float64
 
-def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
+
+def calculate_masked_loss(predictions, targets, valid_mask, loss_fn):
+    """Apply a loss only to valid ParFlow cells."""
+
+    valid_mask = valid_mask.to(torch.bool)
+    if not torch.any(valid_mask):
+        raise ValueError("Cannot calculate loss: batch contains no valid cells")
+    return loss_fn(predictions[valid_mask], targets[valid_mask])
+
+
+def calculate_multistep_loss(
+    predictions, targets, valid_masks, loss_fn, weights=None
+):
     """
     Calculate loss across multiple timesteps with optional weighting.
     
     Args:
         predictions: Model predictions [n_timesteps, batch, z, y, x]
         targets: Ground truth targets [n_timesteps, batch, z, y, x]
+        valid_masks: Valid target cells [n_timesteps, batch, z, y, x]
         loss_fn: Loss function to use
         weights: Optional weights for each timestep [n_timesteps]
         
@@ -27,7 +43,9 @@ def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
     
     if weights is None:
         # Default: equal weighting across all timesteps
-        weights = torch.ones(n_timesteps, device=predictions.device)
+        weights = torch.ones(
+            n_timesteps, device=predictions.device, dtype=predictions.dtype
+        )
     else:
         weights = torch.tensor(weights, device=predictions.device, dtype=predictions.dtype)
     
@@ -36,10 +54,29 @@ def calculate_multistep_loss(predictions, targets, loss_fn, weights=None):
     
     total_loss = 0.0
     for t in range(n_timesteps):
-        timestep_loss = loss_fn(predictions[t], targets[t])
+        timestep_loss = calculate_masked_loss(
+            predictions[t], targets[t], valid_masks[t], loss_fn
+        )
         total_loss += weights[t] * timestep_loss
     
     return total_loss
+
+
+def forward_autoregressive_masked(
+    model, initial_pressure, evaptrans_sequence, statics, valid_masks
+):
+    """Roll forward while keeping inactive cells neutral between steps."""
+
+    predictions = []
+    current_state = initial_pressure
+    for t in range(evaptrans_sequence.shape[0]):
+        next_state = model(current_state, evaptrans_sequence[t], statics)
+        next_state = torch.where(
+            valid_masks[t], next_state, torch.zeros_like(next_state)
+        )
+        predictions.append(next_state)
+        current_state = next_state
+    return torch.stack(predictions)
 
 def train_epoch(
     model,
@@ -67,17 +104,19 @@ def train_epoch(
     # Store sample predictions for visualization
     sample_predictions = None
     sample_targets = None
+    sample_valid_mask = None
     
     for i, batch in enumerate(data_iterator):
         # Callback: batch begin
         if callback_manager:
             callback_manager.on_batch_begin(i, {'training': train})
         
-        state, evaptrans, params, y = batch
+        state, evaptrans, params, y, valid_mask = batch
         state = state.to(device=device, non_blocking=True)
         evaptrans = evaptrans.to(device, non_blocking=True)
         params = params.to(device, non_blocking=True)
         y = y.to(device=device, non_blocking=True)
+        valid_mask = valid_mask.to(device=device, non_blocking=True)
         
         # Detect multi-timestep vs single-timestep based on target shape
         is_multistep = len(y.shape) == 5  # [n_timesteps, batch, z, y, x]
@@ -95,13 +134,16 @@ def train_epoch(
             # Scale target sequence
             for t in range(n_timesteps):
                 model.scale_pressure(y[t])
+                y[t].masked_fill_(~valid_mask[t], 0)
+            state.masked_fill_(~valid_mask[0], 0)
         else:
             # Single-timestep training (backward compatibility)
-            y = y.squeeze()
             model.scale_pressure(state)
             model.scale_evaptrans(evaptrans)
             model.scale_statics(params)
             model.scale_pressure(y)
+            state.masked_fill_(~valid_mask, 0)
+            y.masked_fill_(~valid_mask, 0)
 
         if not len(state): 
             continue
@@ -111,10 +153,14 @@ def train_epoch(
         if is_multistep:
             # Multi-timestep autoregressive prediction
             if train:
-                yhat = model.forward_autoregressive(state, evaptrans, params)
+                yhat = forward_autoregressive_masked(
+                    model, state, evaptrans, params, valid_mask
+                )
             else:
                 with torch.no_grad():
-                    yhat = model.forward_autoregressive(state, evaptrans, params)
+                    yhat = forward_autoregressive_masked(
+                        model, state, evaptrans, params, valid_mask
+                    )
                     
             if torch.isnan(yhat).any():
                 error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
@@ -122,21 +168,23 @@ def train_epoch(
                 raise ValueError(f'Predictions went nan! Nans in input: {torch.isnan(state).sum()}')
                 
             # Calculate multi-timestep loss
-            loss = calculate_multistep_loss(yhat, y, loss_fn, autoregressive_loss_weights)
+            loss = calculate_multistep_loss(
+                yhat, y, valid_mask, loss_fn, autoregressive_loss_weights
+            )
         else:
             # Single-timestep prediction (backward compatibility)  
             if train:
-                yhat = model(state, evaptrans, params).squeeze()
+                yhat = model(state, evaptrans, params)
             else:
                 with torch.no_grad():
-                    yhat = model(state, evaptrans, params).squeeze()
+                    yhat = model(state, evaptrans, params)
                     
             if torch.isnan(yhat).any():
                 error(f"NaN values detected in predictions: {torch.isnan(yhat).sum()} NaNs")
                 error(f"NaN values in input state: {torch.isnan(state).sum()} NaNs")
                 raise ValueError(f'Predictions went nan! Nans in input: {torch.isnan(state).sum()}')
                 
-            loss = loss_fn(yhat, y)
+            loss = calculate_masked_loss(yhat, y, valid_mask, loss_fn)
         
         if train:
             loss.backward()
@@ -166,6 +214,7 @@ def train_epoch(
                     model.unscale_pressure(y_viz[t])
                 sample_predictions = yhat_viz.detach().cpu()
                 sample_targets = y_viz.detach().cpu()
+                sample_valid_mask = valid_mask.detach().cpu()
             else:
                 # Single-timestep unscaling
                 yhat_viz = yhat.clone()
@@ -174,6 +223,7 @@ def train_epoch(
                 model.unscale_pressure(y_viz)
                 sample_predictions = yhat_viz.detach().cpu()
                 sample_targets = y_viz.detach().cpu()
+                sample_valid_mask = valid_mask.detach().cpu()
     
     avg_loss = epoch_loss / max(num_batches, 1)
     
@@ -182,16 +232,28 @@ def train_epoch(
     
     if not train and sample_predictions is not None and sample_targets is not None:
         # Compute channel losses
-        channel_losses = compute_channel_losses(sample_predictions, sample_targets)
+        channel_losses = compute_channel_losses(
+            sample_predictions, sample_targets, mask=sample_valid_mask
+        )
         metrics.update(channel_losses)
+
+        # Track whether errors are concentrated near the masked domain edge,
+        # where padding choices have the largest effect.
+        boundary_losses = compute_boundary_losses(
+            sample_predictions, sample_targets, mask=sample_valid_mask
+        )
+        metrics.update(boundary_losses)
         
         # Compute quantile metrics
-        quantile_metrics = compute_quantile_metrics(sample_predictions, sample_targets)
+        quantile_metrics = compute_quantile_metrics(
+            sample_predictions, sample_targets, mask=sample_valid_mask
+        )
         metrics.update(quantile_metrics)
         
         # Add sample data for visualization
         metrics['sample_predictions'] = sample_predictions
         metrics['sample_targets'] = sample_targets
+        metrics['sample_valid_mask'] = sample_valid_mask
         
     return pd.Series(metrics)
 
@@ -201,10 +263,10 @@ def train_model(
     opt, 
     loss_fun, 
     max_epochs,
+    device,
     scheduler=None,
     val_dl=None, 
     callback_manager: Optional[CallbackManager] = None,
-    device=DEVICE, 
     dtype=DTYPE,
     autoregressive_loss_weights=None
 ):
@@ -237,7 +299,9 @@ def train_model(
             device=device,
             autoregressive_loss_weights=autoregressive_loss_weights
         )
-        train_df = train_df._append(train_metrics, ignore_index=True)
+        train_df = pd.concat(
+            [train_df, train_metrics.to_frame().T], ignore_index=True
+        )
         tl = train_metrics['train_loss']
         info(f"Epoch {e+1}/{max_epochs} - Train loss: {tl:0.4e}")
 
@@ -258,7 +322,9 @@ def train_model(
                 device=device,
                 autoregressive_loss_weights=autoregressive_loss_weights
             )
-            valid_df = valid_df._append(valid_metrics, ignore_index=True)
+            valid_df = pd.concat(
+                [valid_df, valid_metrics.to_frame().T], ignore_index=True
+            )
             vl = valid_metrics['val_loss']
             info(f"Epoch {e+1}/{max_epochs} - Validation loss: {vl:0.4e}")
 
@@ -267,7 +333,9 @@ def train_model(
             
             # Add channel losses and quantile metrics if available
             for key, value in valid_metrics.items():
-                if key.startswith(('loss_channel_', 'error_q')) and isinstance(value, (int, float)):
+                if key.startswith(
+                    ('loss_channel_', 'loss_boundary', 'loss_interior', 'error_q')
+                ) and isinstance(value, (int, float)):
                     epoch_logs[key] = value
             
             # Add sample data for visualization

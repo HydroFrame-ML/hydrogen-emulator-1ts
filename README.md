@@ -30,7 +30,81 @@ Select `Python3` as the kernel and then you shoudl be good to run
 *Note:* From other enviroments you can also use `module load hydrogen-shared` to load this enviroment. 
 
 ## How to run a traning run
-From terminal: `python ./emulator-1ts/main.py --config example_config.yaml --mode train`
+From terminal: `python -m emulator_1ts.main --config example_config.yaml --mode train`
+
+Direct execution is also supported: `python ./emulator_1ts/main.py --config example_config.yaml --mode train`
+
+### Recover a TorchScript export without retraining
+
+Training saves the completed config and `*_weights_only.pth` state dict before
+creating TorchScript. If that final scripting step fails (for example, because
+`model.py` changed while a long-running Python process was training), rerun only
+the export in a fresh process:
+
+```bash
+uv run python -m emulator_1ts.main \
+  --config runs/<experiment>_config.yaml \
+  --mode export
+```
+
+The command uses `weights_path` and `model_path` from the completed config.
+They can be overridden with `--weights` and `--output`.
+
+## Training from a ParFlow ensemble
+
+Set each split's data location to the ensemble root (the directory containing
+`metadata.csv` and `member_*`) and select complete members for each split. The
+PFB run prefix can be specified independently from the experiment name:
+
+```yaml
+name: mjb-resnet-initial
+
+data_def:
+  train_data_location: /path/to/data/mjb/ensemble
+  validation_data_location: /path/to/data/mjb/ensemble
+  test_data_location: /path/to/data/mjb/ensemble
+  run_name: mjb
+
+  train_member_ids: ['0000', '0001', '0002', '0003', '0004', '0005', '0006']
+  validation_member_ids: ['0007']
+  test_member_ids: ['0008', '0009']
+
+  parameters:
+    - [perm_x, 0]
+  patch_size_x: 107
+  patch_size_y: 89
+  overlap_x: 0
+  overlap_y: 0
+  n_evaptrans: -4
+  n_timesteps: 12
+```
+
+For a horizon of `H`, a sample starting at timestep `t` uses pressure at `t`,
+evapotranspiration at `t+1 ... t+H`, and pressure targets at `t+1 ... t+H`.
+Windows are constructed independently inside each member and incomplete final
+windows are excluded; they never wrap into the next member.
+
+Pressure cells containing ParFlow's no-data sentinel are tracked with a boolean
+valid-cell mask. Inactive cells are excluded from training, validation, and test
+metrics, and are reset to a neutral scaled value during autoregressive rollout.
+
+## Multiscale ConvNeXT U-Net
+
+`convnext_unet` adds a mask-aware encoder/decoder while retaining the current
+ConvNeXT residual pressure prediction. A complete MJB example is provided in
+`convnext_unet_multistep_config_mjb_ensemble.yaml`.
+
+With `downsample_mode: auto`, the model derives an anisotropic pooling schedule
+from the dataset patch dimensions. An axis is halved only if it remains at least
+`min_coarse_cells` wide. For example, four levels with a minimum of eight cells
+resolve `32 x 256` to `[(2,2), (2,2), (1,2), (1,2)]`. Decoder features are
+resized to the exact skip shape, so odd dimensions and non-square basins do not
+require padding to powers of two. The resolved schedule is logged and saved in
+the completed experiment configuration.
+
+The static `mask` parameter is required. Downsampling uses mask-normalized
+pooling, and hidden/output features are reset outside the active domain at every
+scale.
 
 ## CONUS2.1 Update progress: 
 - New scalers have been calculated for the CONUS2.1 run and are available in this folder.
@@ -39,4 +113,4 @@ From terminal: `python ./emulator-1ts/main.py --config example_config.yaml --mod
 ## Other things to add/change: 
 1. We need to setup a testing run. A good first test would be the same locaton but a different point in time (we have little expectation that it will do good on a different location just yet since we are training on a very small subset)
 1. Change the inputs so the number of layers used and the parameter list is a dictionary and not two separate lists.
-2. Make a copy of the config file where the model is saved for documentation purposes. 
+2. Make a copy of the config file where the model is saved for documentation purposes.

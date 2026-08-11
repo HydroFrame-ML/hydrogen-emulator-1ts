@@ -7,7 +7,7 @@ readme = "README.md"
 
 dependencies = [
     "numpy",
-    "pandas", 
+    "pandas",
     "torch",
     "torchvision",
     "xarray",
@@ -19,6 +19,7 @@ dependencies = [
     "seaborn",
     "pyyaml",
     "tqdm",
+    "pftools>=1.3.13",
 ]
 
 [build-system]

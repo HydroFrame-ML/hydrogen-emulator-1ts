@@ -1,18 +1,47 @@
-import yaml
-import torch
+import sys
+from argparse import ArgumentParser
+from pathlib import Path
+
 import pandas as pd
+import torch
+import yaml
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from argparse import ArgumentParser
-from torch.utils.data import DataLoader
+# Support both ``python -m emulator_1ts.main`` and direct execution via
+# ``python emulator_1ts/main.py``. In direct mode Python puts the package
+# directory, rather than its parent, on sys.path and relative imports fail.
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from emulator_1ts.dataset import ParFlowDataset
+    from emulator_1ts.model import get_model
+    from emulator_1ts.train import train_model
+    from emulator_1ts.logger import (
+        LogLevel,
+        error,
+        get_log_level,
+        info,
+        set_log_level,
+        verbose,
+    )
+    from emulator_1ts.callbacks import CallbackManager, create_callbacks_from_config
+    from emulator_1ts.experiment_tracking import create_tensorboard_tracker_from_config
+    from emulator_1ts.utils import (
+        calculate_metrics,
+        get_dtype,
+        get_loss,
+        get_optimizer,
+        get_scheduler,
+    )
+else:
+    from .dataset import ParFlowDataset
+    from .model import get_model
+    from .train import train_model
+    from .logger import LogLevel, error, get_log_level, info, set_log_level, verbose
+    from .callbacks import CallbackManager, create_callbacks_from_config
+    from .experiment_tracking import create_tensorboard_tracker_from_config
+    from .utils import calculate_metrics, get_dtype, get_loss, get_optimizer, get_scheduler
 
-from .dataset import ParFlowDataset
-from .model import get_model
-from .train import train_model
-from .logger import set_log_level, info, verbose, error, LogLevel, get_log_level
-from .callbacks import CallbackManager, create_callbacks_from_config
-from .experiment_tracking import create_tensorboard_tracker_from_config
-from .utils import get_optimizer, get_loss, get_dtype, calculate_metrics, get_scheduler
 
 def read_config(config_path):
     with open(config_path, 'r') as f:
@@ -21,12 +50,13 @@ def read_config(config_path):
 
 
 def custom_collate(batch):
-    s, e, p, y = [], [], [], []
+    s, e, p, y, masks = [], [], [], [], []
     for b in batch:
         s.append(b[0])
         e.append(b[1])
         p.append(b[2])
         y.append(b[3])
+        masks.append(b[4])
 
     s = torch.stack(s)
     p = torch.stack(p)
@@ -36,11 +66,13 @@ def custom_collate(batch):
         # Stack along batch dimension, keeping timestep dimension first
         e = torch.stack(e, dim=1)  # [n_timesteps, batch, z, y, x]
         y = torch.stack(y, dim=1)  # [n_timesteps, batch, z, y, x]
+        masks = torch.stack(masks, dim=1)
     else:  # Single-timestep: [z, y, x]
         e = torch.stack(e)
         y = torch.stack(y)
+        masks = torch.stack(masks)
 
-    return s, e, p, y
+    return s, e, p, y, masks
 
 
 def set_seed_all():
@@ -50,6 +82,65 @@ def set_seed_all():
         torch.cuda.manual_seed_all(0)
         # torch.use_deterministic_algorithms(True) - doesn't work for relection
         torch.backends.cudnn.benchmark = False
+
+
+def dataset_definition_for_split(data_def, split, run_name, dtype):
+    """Build dataset kwargs and route an optional member allowlist by split."""
+    dataset_def = data_def.copy()
+    location_key = f'{split}_data_location'
+    member_key = f'{split}_member_ids'
+
+    if location_key not in dataset_def:
+        raise ValueError(f'Missing required data setting: {location_key}')
+
+    dataset_def['data_location'] = dataset_def.pop(location_key)
+    # By default the historical experiment ``name`` is also the PFB prefix,
+    # but ensemble experiments may give the training run a distinct name.
+    dataset_def['run_name'] = dataset_def.get('run_name', run_name)
+    dataset_def['dtype'] = dtype
+
+    if member_key in dataset_def:
+        dataset_def['member_ids'] = dataset_def.pop(member_key)
+
+    # Settings for other splits are configuration metadata, not dataset args.
+    for other_split in ('train', 'validation', 'test'):
+        if other_split != split:
+            dataset_def.pop(f'{other_split}_data_location', None)
+            dataset_def.pop(f'{other_split}_member_ids', None)
+
+    return dataset_def
+
+
+def complete_model_definition(model_type, model_def, dataset):
+    """Attach data-derived channel metadata and spatial dimensions."""
+
+    expected_channels = (
+        len(dataset.PRESSURE_NAMES)
+        + len(dataset.EVAPTRANS_NAMES)
+        + len(dataset.PARAM_NAMES)
+    )
+    configured_channels = model_def.get('in_channels')
+    if configured_channels != expected_channels:
+        raise ValueError(
+            f"model_def.in_channels={configured_channels} does not match the "
+            f"dataset's {expected_channels} channels "
+            f"({len(dataset.PRESSURE_NAMES)} pressure + "
+            f"{len(dataset.EVAPTRANS_NAMES)} evaptrans + "
+            f"{len(dataset.PARAM_NAMES)} static)"
+        )
+
+    model_def['pressure_names'] = dataset.PRESSURE_NAMES
+    model_def['evaptrans_names'] = dataset.EVAPTRANS_NAMES
+    model_def['param_names'] = dataset.PARAM_NAMES
+    model_def['n_evaptrans'] = dataset.n_evaptrans
+    model_def['parameter_list'] = dataset.parameter_list
+    model_def['param_nlayer'] = dataset.param_nlayer
+    if model_type == 'convnext_unet':
+        # Resolve the schedule from the actual tensor/patch dimensions rather
+        # than tying the architecture to one basin's dimensions in YAML.
+        model_def['input_height'] = dataset.patch_size_y
+        model_def['input_width'] = dataset.patch_size_x
+    return model_def
 
 
 def train(
@@ -80,11 +171,8 @@ def train(
     # Create the data loaders
     dtype = get_dtype(dtype)
     info("Creating training dataset and data loader")
-    train_data_def = data_def.copy()
-    train_data_location = train_data_def.pop('train_data_location')
-    train_data_def['data_location'] = train_data_location
-    train_data_def['run_name'] = name
-    dataset = ParFlowDataset(**train_data_def, dtype=dtype)
+    train_data_def = dataset_definition_for_split(data_def, 'train', name, dtype)
+    dataset = ParFlowDataset(**train_data_def)
     verbose(f"Training dataset created with {len(dataset)} samples")
     train_dl = DataLoader(
         dataset,
@@ -97,11 +185,10 @@ def train(
     val_dl = None
     if 'validation_data_location' in data_def:
         info("Creating validation dataset and data loader")
-        validation_data_def = data_def.copy()
-        validation_data_location = validation_data_def.pop('validation_data_location')
-        validation_data_def['data_location'] = validation_data_location
-        validation_data_def['run_name'] = name
-        val_dataset = ParFlowDataset(**validation_data_def, dtype=dtype)
+        validation_data_def = dataset_definition_for_split(
+            data_def, 'validation', name, dtype
+        )
+        val_dataset = ParFlowDataset(**validation_data_def)
         verbose(f"Validation dataset created with {len(val_dataset)} samples")
         val_dl = DataLoader(
             val_dataset,
@@ -113,14 +200,21 @@ def train(
 
     # Create the model
     info(f"Creating model of type: {model_type}")
-    # Add names of model inputs to model definition for scaling, if needed
-    model_def['pressure_names'] = dataset.PRESSURE_NAMES
-    model_def['evaptrans_names'] = dataset.EVAPTRANS_NAMES
-    model_def['param_names'] = dataset.PARAM_NAMES
-    model_def['n_evaptrans'] = dataset.n_evaptrans
-    model_def['parameter_list'] = dataset.parameter_list
-    model_def['param_nlayer'] = dataset.param_nlayer
+    model_def = complete_model_definition(model_type, model_def, dataset)
     model = get_model(model_type, model_def)
+    if model_type == 'convnext_unet':
+        resolved_schedule = [
+            [factor_y, factor_x]
+            for factor_y, factor_x in zip(
+                model.downsample_factor_y, model.downsample_factor_x
+            )
+        ]
+        config['resolved_model'] = {
+            'input_height': model.input_height,
+            'input_width': model.input_width,
+            'downsample_factors': resolved_schedule,
+        }
+        info(f"Resolved U-Net downsampling schedule: {resolved_schedule}")
     model = model.to(device).to(dtype)
     verbose(f"Model created and moved to {device} with dtype {dtype}")
 
@@ -171,6 +265,7 @@ def train(
         scheduler=scheduler,
         val_dl=val_dl,
         callback_manager=callback_manager,
+        device=device,
         dtype=dtype,
         autoregressive_loss_weights=autoregressive_loss_weights
     )
@@ -214,6 +309,38 @@ def train(
     print(f'Config saved to {log_location}/{name}_config.yaml')
 
 
+def export_model(config, weights_path=None, output_path=None):
+    """Build and script a trained model in a fresh Python process.
+
+    Training writes both the completed model definition and the state dict
+    before its final TorchScript export. This entry point can therefore recover
+    an export if scripting failed after a long training run, without retraining.
+    """
+
+    configured_weights = weights_path or config.get('weights_path')
+    configured_output = output_path or config.get('model_path')
+    if not configured_weights:
+        raise ValueError("No weights path supplied and config has no weights_path")
+    if not configured_output:
+        raise ValueError("No output path supplied and config has no model_path")
+
+    weights_path = Path(configured_weights).expanduser().resolve()
+    output_path = Path(configured_output).expanduser().resolve()
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Model weights do not exist: {weights_path}")
+
+    model = get_model(config['model_type'], dict(config['model_def']))
+    state_dict = torch.load(weights_path, map_location='cpu', weights_only=True)
+    model.load_state_dict(state_dict, strict=True)
+    model = model.to(device='cpu', dtype=get_dtype(config.get('dtype', 'float32')))
+    model.eval()
+    scripted = torch.jit.script(model)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.jit.save(scripted, output_path)
+    info(f"TorchScript model exported to {output_path}")
+    return output_path
+
+
 
 def test(
     name: str,
@@ -239,11 +366,8 @@ def test(
 
     # Create the data loader
     info("Creating dataset and data loader for testing")
-    test_data_def = data_def.copy()
-    test_data_location = test_data_def.pop('test_data_location')
-    test_data_def['data_location'] = test_data_location
-    test_data_def['run_name'] = name
-    dataset = ParFlowDataset(**test_data_def, dtype=dtype)
+    test_data_def = dataset_definition_for_split(data_def, 'test', name, dtype)
+    dataset = ParFlowDataset(**test_data_def)
     verbose(f"Test dataset created with {len(dataset)} samples")
     test_dl = DataLoader(
         dataset,
@@ -257,6 +381,7 @@ def test(
     model.eval()
     all_outputs = []
     all_targets = []
+    all_valid_masks = []
 
     if save_inputs:
         all_states = []
@@ -275,7 +400,7 @@ def test(
 
     with torch.no_grad():
         for i, batch in enumerate(batch_iterator):
-            s, e, p, y = batch
+            s, e, p, y, valid_mask = batch
 
             if save_inputs:
                 all_states.append(s)
@@ -287,11 +412,14 @@ def test(
             e = e.to(device=device, non_blocking=True)
             p = p.to(device=device, non_blocking=True)
             y = y.to(device=device, non_blocking=True)
+            valid_mask = valid_mask.to(device=device, non_blocking=True)
 
             model.scale_pressure(s)
             model.scale_evaptrans(e)
             model.scale_statics(p)
             model.scale_pressure(y)
+            s.masked_fill_(~valid_mask, 0)
+            y.masked_fill_(~valid_mask, 0)
 
             if save_inputs:
                 all_scaled_states.append(s.cpu())
@@ -307,6 +435,7 @@ def test(
 
             all_outputs.append(outputs.cpu())
             all_targets.append(y.cpu())
+            all_valid_masks.append(valid_mask.cpu())
 
     info("Evaluation completed, processing results")
     if save_inputs:
@@ -316,6 +445,7 @@ def test(
         all_scaled_evaptrans = torch.cat(all_scaled_evaptrans)
     all_outputs = torch.cat(all_outputs)
     all_targets = torch.cat(all_targets)
+    all_valid_masks = torch.cat(all_valid_masks)
     info(f'All outputs shape: {all_outputs.shape}')
     info(f'All targets shape: {all_targets.shape}')
 
@@ -329,6 +459,10 @@ def test(
     verbose(f"Saving targets to {target_filename}")
     torch.save(all_targets, target_filename)
     info(f'Targets saved to {target_filename}')
+    mask_filename = f'{log_location}/{name}_valid_masks.pt'
+    verbose(f"Saving valid-cell masks to {mask_filename}")
+    torch.save(all_valid_masks, mask_filename)
+    info(f'Valid-cell masks saved to {mask_filename}')
     if save_inputs:
         # Save the states
         states_filename = f'{log_location}/{name}_states.pt'
@@ -363,7 +497,7 @@ def test(
 
     # Calculate and print metrics
     info("Calculating evaluation metrics")
-    metrics = calculate_metrics(all_outputs, all_targets)
+    metrics = calculate_metrics(all_outputs, all_targets, mask=all_valid_masks)
     metrics_filename = f'{log_location}/{name}_test_metrics.csv'
     verbose(f"Saving metrics to {metrics_filename}")
     metrics.to_csv(metrics_filename)
@@ -374,7 +508,7 @@ def test(
     info("Testing process completed successfully")
 
 
-def main(config, mode, log_level, save_inputs):
+def main(config, mode, log_level, save_inputs, weights_path=None, output_path=None):
     # Set the log level
     set_log_level(log_level)
 
@@ -391,6 +525,9 @@ def main(config, mode, log_level, save_inputs):
     elif mode == "test":
         info("Starting testing process")
         test(**config, save_inputs=save_inputs)
+    elif mode == "export":
+        info("Starting fresh-process TorchScript export")
+        export_model(config, weights_path=weights_path, output_path=output_path)
 
 
 if __name__ == "__main__":
@@ -398,7 +535,21 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument(
-        "--mode", type=str, required=True, choices=["train", "test"], default="train"
+        "--mode",
+        type=str,
+        required=True,
+        choices=["train", "test", "export"],
+        default="train",
+    )
+    parser.add_argument(
+        "--weights",
+        type=str,
+        help="State-dict path for export mode; defaults to config.weights_path",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="TorchScript path for export mode; defaults to config.model_path",
     )
     parser.add_argument(
         "--log-level", type=str, choices=["silent", "info", "verbose"], default="silent",
@@ -411,4 +562,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     save_inputs = args.save_inputs if args.mode == "test" else False
-    main(args.config, args.mode, args.log_level, save_inputs)
+    main(
+        args.config,
+        args.mode,
+        args.log_level,
+        save_inputs,
+        weights_path=args.weights,
+        output_path=args.output,
+    )
