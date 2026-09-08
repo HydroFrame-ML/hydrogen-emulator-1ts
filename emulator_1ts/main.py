@@ -15,6 +15,7 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from emulator_1ts.dataset import ParFlowDataset
     from emulator_1ts.model import get_model
+    from emulator_1ts.scalers import DEFAULT_SCALER_PATH
     from emulator_1ts.train import train_model
     from emulator_1ts.logger import (
         LogLevel,
@@ -36,6 +37,7 @@ if __package__ in (None, ''):
 else:
     from .dataset import ParFlowDataset
     from .model import get_model
+    from .scalers import DEFAULT_SCALER_PATH
     from .train import train_model
     from .logger import LogLevel, error, get_log_level, info, set_log_level, verbose
     from .callbacks import CallbackManager, create_callbacks_from_config
@@ -111,6 +113,19 @@ def dataset_definition_for_split(data_def, split, run_name, dtype):
     return dataset_def
 
 
+def validation_is_enabled(data_def):
+    """Return whether the config requests a validation dataset.
+
+    An explicitly empty ``validation_member_ids`` list is a convenient way to
+    disable validation for quick overfitting/debug runs while retaining the
+    validation data location in shared configs.
+    """
+    return (
+        'validation_data_location' in data_def
+        and data_def.get('validation_member_ids') != []
+    )
+
+
 def complete_model_definition(model_type, model_def, dataset):
     """Attach data-derived channel metadata and spatial dimensions."""
 
@@ -128,6 +143,17 @@ def complete_model_definition(model_type, model_def, dataset):
             f"{len(dataset.EVAPTRANS_NAMES)} evaptrans + "
             f"{len(dataset.PARAM_NAMES)} static)"
         )
+
+    # Scalers are basin-specific. Without ``model_def.scalers`` every run
+    # standardizes with the packaged CONUS2.1 CONUS-wide statistics, which are
+    # the wrong distribution for a subset domain or a perturbed ensemble.
+    if model_def.get('scalers') is None:
+        info(
+            "No model_def.scalers configured; using the packaged CONUS2.1 "
+            f"statistics ({DEFAULT_SCALER_PATH})"
+        )
+    else:
+        info(f"Using configured scalers: {model_def['scalers']}")
 
     model_def['pressure_names'] = dataset.PRESSURE_NAMES
     model_def['evaptrans_names'] = dataset.EVAPTRANS_NAMES
@@ -148,7 +174,7 @@ def train(
     log_location: str,
     model_type: str,
     optimizer: str,
-    loss: str,
+    loss,
     n_epochs: int,
     batch_size: int,
     lr: float,
@@ -163,6 +189,10 @@ def train(
 ):
     info(f"Initializing training with name: {name}")
     verbose(f"Training parameters: epochs={n_epochs}, batch_size={batch_size}, lr={lr}, device={device}")
+
+    # Use the configured output directory for all training artifacts and
+    # TensorBoard logs. Create it before callbacks or final artifact saves run.
+    Path(log_location).expanduser().mkdir(parents=True, exist_ok=True)
 
     if set_seed:
         set_seed_all()
@@ -183,7 +213,7 @@ def train(
     )
 
     val_dl = None
-    if 'validation_data_location' in data_def:
+    if validation_is_enabled(data_def):
         info("Creating validation dataset and data loader")
         validation_data_def = dataset_definition_for_split(
             data_def, 'validation', name, dtype
@@ -197,6 +227,8 @@ def train(
             num_workers=num_workers//2,
             prefetch_factor=2
         )
+    elif data_def.get('validation_member_ids') == []:
+        info("Validation disabled because validation_member_ids is empty")
 
     # Create the model
     info(f"Creating model of type: {model_type}")
@@ -222,7 +254,9 @@ def train(
     # Create the optimizer and loss function
     info(f"Setting up optimizer ({optimizer}) and loss function ({loss})")
     optimizer_obj = get_optimizer(optimizer, model, lr)
-    loss_fn = get_loss(loss)
+    # Pass the model so a residual-aware loss can read its per-layer pressure
+    # sigmas; the loss carries buffers, so it moves to the training device.
+    loss_fn = get_loss(loss, model=model).to(device)
 
     # Create learning rate scheduler if specified
     scheduler = None
@@ -250,7 +284,9 @@ def train(
         callback_manager.add_callback(callback)
 
     # Add TensorBoard tracker
-    tensorboard_tracker = create_tensorboard_tracker_from_config(config, name)
+    tensorboard_tracker = create_tensorboard_tracker_from_config(
+        config, name, log_dir=log_location
+    )
     if tensorboard_tracker:
         callback_manager.add_callback(tensorboard_tracker)
         info("TensorBoard tracking enabled")

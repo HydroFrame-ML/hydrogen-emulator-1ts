@@ -50,6 +50,51 @@ uv run python -m emulator_1ts.main \
 The command uses `weights_path` and `model_path` from the completed config.
 They can be overridden with `--weights` and `--output`.
 
+### Fit scalers for your own basin
+
+The packaged scalers describe CONUS2.1 over WY2003. Training a subset basin or a
+perturbed ensemble against them standardizes with the wrong distribution, so fit
+a matching set first. The easiest route reads the training config, so the fit
+covers exactly the run, statics, and training members that will be trained on:
+
+```bash
+uv run python -m emulator_1ts.fit_scalers \
+  --config convnext_unet_multistep_config_mjb_ensemble.yaml \
+  --output mjb_scalers.yaml
+```
+
+Or point it at a directory directly. A single run directory and an ensemble root
+of `member_*` directories both work:
+
+```bash
+uv run python -m emulator_1ts.fit_scalers \
+  --data-location /path/to/ensemble --run-name mjb \
+  --parameters perm_x perm_y porosity mannings mask \
+  --member-ids 0000 0001 0002 \
+  --timestep-interval 5 --output mjb_scalers.yaml
+```
+
+Then point the model at the result:
+
+```yaml
+model_def:
+  scalers: mjb_scalers.yaml
+```
+
+Notes:
+
+- **Fit on training members only.** Including validation or test members leaks
+  their distribution into the model's inputs.
+- Statistics cover active cells only, using the domain mask when one is present
+  and dropping ParFlow sentinels either way.
+- `--timestep-interval` strides over timesteps. A prime stride avoids sampling
+  the same hour of day repeatedly, which is what the packaged CONUS statistics
+  did; `--max-timesteps` caps the work for a quick look.
+- A channel that is constant over the domain (`ssat` and `vg_n` are, on CONUS)
+  gets `std: 0`, which the loader turns into `std: 1` with a warning. That is
+  expected, and it is the same substitution the packaged `*_adjusted*` files
+  make by hand.
+
 ## Training from a ParFlow ensemble
 
 Set each split's data location to the ensemble root (the directory containing

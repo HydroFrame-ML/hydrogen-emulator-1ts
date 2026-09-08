@@ -24,6 +24,22 @@ def set_style():
     })
 
 
+def flatten_timesteps(tensor: torch.Tensor) -> torch.Tensor:
+    """Collapse a leading timestep axis to ``(batch, channel, y, x)``.
+
+    Multistep training stores samples as ``(n_timesteps, batch, z, y, x)``, but
+    every plotting helper here indexes ``[sample_idx, channel_idx]``.  Given a
+    5D tensor that made ``shape[1]`` the batch size rather than the channel
+    count, and handed ``imshow`` a 3D array, so the spatial figures raised and
+    were swallowed by the caller's exception handler.  Folding timesteps into
+    the batch axis keeps every rollout step available as a sample and restores
+    the channel axis the helpers expect.
+    """
+    if tensor.dim() == 5:
+        return tensor.reshape(-1, *tensor.shape[2:])
+    return tensor
+
+
 def fig_to_image(fig: Figure) -> Image.Image:
     """Convert matplotlib figure to PIL Image."""
     buf = io.BytesIO()

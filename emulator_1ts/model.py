@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from typing import Dict, List, Optional, Tuple
-from .scalers import DEFAULT_SCALERS
+from .scalers import load_scalers, resolve_pressure_scaler_names
 
 def get_model(
     model_name,
@@ -130,6 +130,10 @@ class ResidualBlock(nn.Module):
 
 class ResNet(torch.nn.Module):
 
+    # Declared so TorchScript still types the attribute when a scaler set
+    # covers no pressure layers and the list is empty.
+    pressure_scaler_names: List[str]
+
     def __init__(
         self,
         in_channels,
@@ -138,7 +142,7 @@ class ResNet(torch.nn.Module):
         kernel_size=5,
         depth=1,
         activation=GeGLU,
-        scalers=DEFAULT_SCALERS,
+        scalers=None,
         pressure_names=None,
         evaptrans_names=None,
         param_names=None,
@@ -154,8 +158,17 @@ class ResNet(torch.nn.Module):
         self.kernel_size = kernel_size
         self.depth = depth
         self.activation = activation
-        self.scalers = scalers
+        # ``scalers`` may be a mapping, a path to a scaler YAML, or None for the
+        # packaged CONUS2.1 statistics, so a config can select a basin-specific
+        # set with ``model_def.scalers``.
+        self.scalers = load_scalers(scalers)
         self.pressure_names = pressure_names
+        # Settle the layer -> scaler-key mapping once at construction. This
+        # keeps the scaling loops free of string formatting and confines the
+        # legacy ``press_diff_*`` key handling to one place.
+        self.pressure_scaler_names = resolve_pressure_scaler_names(
+            self.scalers, pressure_names
+        )
         self.evaptrans_names = evaptrans_names
         self.n_evaptrans = n_evaptrans
         self.param_names = param_names
@@ -196,28 +209,41 @@ class ResNet(torch.nn.Module):
 
     @torch.jit.export
     def get_parflow_pressure(self, pressure):
-        pressure = pressure.unsqueeze(0)
+        # ``unsqueeze`` returns a view onto the caller's storage, so scaling in
+        # place here would rewrite ParFlow's own tensor. Copy first.
+        pressure = pressure.unsqueeze(0).clone()
         self.scale_pressure(pressure)
         return pressure
-        
+
     @torch.jit.export
     def scale_pressure(self, x):
         # Dims are (batch, z, y, x)
+        if len(self.pressure_scaler_names) < x.shape[1]:
+            raise ValueError(
+                "Scalers cover fewer pressure layers than the tensor has"
+            )
         for i in range(x.shape[1]):
-            mu = self.scalers[f'press_diff_{i}'][0]
-            sigma = self.scalers[f'press_diff_{i}'][1]
+            mu = self.scalers[self.pressure_scaler_names[i]][0]
+            sigma = self.scalers[self.pressure_scaler_names[i]][1]
             x[:, i, :, :] = (x[:, i, :, :] - mu) / sigma
-            
+
     @torch.jit.export
     def unscale_pressure(self, x):
         # Dims are (batch, z, y, x)
+        if len(self.pressure_scaler_names) < x.shape[1]:
+            raise ValueError(
+                "Scalers cover fewer pressure layers than the tensor has"
+            )
         for i in range(x.shape[1]):
-            mu = self.scalers[f'press_diff_{i}'][0]
-            sigma = self.scalers[f'press_diff_{i}'][1]
+            mu = self.scalers[self.pressure_scaler_names[i]][0]
+            sigma = self.scalers[self.pressure_scaler_names[i]][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
     @torch.jit.export
     def get_predicted_pressure(self, x):
+        # Copy so the caller keeps its scaled prediction and a second call
+        # cannot unscale the same tensor twice.
+        x = x.clone()
         self.unscale_pressure(x)
         return x.squeeze()
 
@@ -228,7 +254,8 @@ class ResNet(torch.nn.Module):
         #Grab the top n_lay layers
         elif self.n_evaptrans < 0:
             evaptrans = evaptrans[self.n_evaptrans:,:,:]
-        evaptrans = evaptrans.unsqueeze(0)
+        # Slicing and unsqueezing both return views of the caller's tensor.
+        evaptrans = evaptrans.unsqueeze(0).clone()
         self.scale_evaptrans(evaptrans)
         return evaptrans
     
@@ -264,7 +291,9 @@ class ResNet(torch.nn.Module):
             parameter_data.append(param_temp)
 
         # Concatenate the parameter data together
-        # End result is a dims of (n_parameters, y, x)
+        # End result is a dims of (n_parameters, y, x). ``cat`` allocates, so
+        # unlike the pressure and evaptrans paths this cannot alias the
+        # caller's statics.
         parameter_data = torch.cat(parameter_data, dim=0)
         parameter_data = parameter_data.unsqueeze(0)
         self.scale_statics(parameter_data)
@@ -379,6 +408,9 @@ class ConvNeXTBlock(nn.Module):
 
 class ConvNeXT(torch.nn.Module):
 
+    # See ResNet: keeps the empty-list case scriptable.
+    pressure_scaler_names: List[str]
+
     def __init__(
         self,
         in_channels,
@@ -388,7 +420,7 @@ class ConvNeXT(torch.nn.Module):
         kernel_size=5,
         depth=1,
         activation=GeGLU,
-        scalers=DEFAULT_SCALERS,
+        scalers=None,
         pressure_names=None,
         evaptrans_names=None,
         param_names=None,
@@ -406,8 +438,17 @@ class ConvNeXT(torch.nn.Module):
         self.kernel_size = kernel_size
         self.depth = depth
         self.activation = activation
-        self.scalers = scalers
+        # ``scalers`` may be a mapping, a path to a scaler YAML, or None for the
+        # packaged CONUS2.1 statistics, so a config can select a basin-specific
+        # set with ``model_def.scalers``.
+        self.scalers = load_scalers(scalers)
         self.pressure_names = pressure_names
+        # Settle the layer -> scaler-key mapping once at construction. This
+        # keeps the scaling loops free of string formatting and confines the
+        # legacy ``press_diff_*`` key handling to one place.
+        self.pressure_scaler_names = resolve_pressure_scaler_names(
+            self.scalers, pressure_names
+        )
         self.evaptrans_names = evaptrans_names
         self.n_evaptrans = n_evaptrans
         self.param_names = param_names
@@ -449,28 +490,41 @@ class ConvNeXT(torch.nn.Module):
 
     @torch.jit.export
     def get_parflow_pressure(self, pressure):
-        pressure = pressure.unsqueeze(0)
+        # ``unsqueeze`` returns a view onto the caller's storage, so scaling in
+        # place here would rewrite ParFlow's own tensor. Copy first.
+        pressure = pressure.unsqueeze(0).clone()
         self.scale_pressure(pressure)
         return pressure
-        
+
     @torch.jit.export
     def scale_pressure(self, x):
         # Dims are (batch, z, y, x)
+        if len(self.pressure_scaler_names) < x.shape[1]:
+            raise ValueError(
+                "Scalers cover fewer pressure layers than the tensor has"
+            )
         for i in range(x.shape[1]):
-            mu = self.scalers[f'press_diff_{i}'][0]
-            sigma = self.scalers[f'press_diff_{i}'][1]
+            mu = self.scalers[self.pressure_scaler_names[i]][0]
+            sigma = self.scalers[self.pressure_scaler_names[i]][1]
             x[:, i, :, :] = (x[:, i, :, :] - mu) / sigma
-            
+
     @torch.jit.export
     def unscale_pressure(self, x):
         # Dims are (batch, z, y, x)
+        if len(self.pressure_scaler_names) < x.shape[1]:
+            raise ValueError(
+                "Scalers cover fewer pressure layers than the tensor has"
+            )
         for i in range(x.shape[1]):
-            mu = self.scalers[f'press_diff_{i}'][0]
-            sigma = self.scalers[f'press_diff_{i}'][1]
+            mu = self.scalers[self.pressure_scaler_names[i]][0]
+            sigma = self.scalers[self.pressure_scaler_names[i]][1]
             x[:, i, :, :] = x[:, i, :, :] * sigma + mu
 
     @torch.jit.export
     def get_predicted_pressure(self, x):
+        # Copy so the caller keeps its scaled prediction and a second call
+        # cannot unscale the same tensor twice.
+        x = x.clone()
         self.unscale_pressure(x)
         return x.squeeze()
 
@@ -481,7 +535,8 @@ class ConvNeXT(torch.nn.Module):
         #Grab the top n_lay layers
         elif self.n_evaptrans < 0:
             evaptrans = evaptrans[self.n_evaptrans:,:,:]
-        evaptrans = evaptrans.unsqueeze(0)
+        # Slicing and unsqueezing both return views of the caller's tensor.
+        evaptrans = evaptrans.unsqueeze(0).clone()
         self.scale_evaptrans(evaptrans)
         return evaptrans
     
@@ -517,7 +572,9 @@ class ConvNeXT(torch.nn.Module):
             parameter_data.append(param_temp)
 
         # Concatenate the parameter data together
-        # End result is a dims of (n_parameters, y, x)
+        # End result is a dims of (n_parameters, y, x). ``cat`` allocates, so
+        # unlike the pressure and evaptrans paths this cannot alias the
+        # caller's statics.
         parameter_data = torch.cat(parameter_data, dim=0)
         parameter_data = parameter_data.unsqueeze(0)
         self.scale_statics(parameter_data)
@@ -551,8 +608,8 @@ class ConvNeXT(torch.nn.Module):
         for l in self.layers:
             x = l(x)
 
-        return x + pressure
-    
+        return pressure + x
+
     def forward_autoregressive(self, initial_pressure, evaptrans_sequence, statics):
         """
         Autoregressive forward pass for multi-timestep prediction.
@@ -783,7 +840,7 @@ class ConvNeXTUNet(ConvNeXT):
         bottleneck_ratio: float = 0.5,
         kernel_size: int = 3,
         activation=GeGLU,
-        scalers=DEFAULT_SCALERS,
+        scalers=None,
         pressure_names=None,
         evaptrans_names=None,
         param_names=None,
@@ -821,8 +878,17 @@ class ConvNeXTUNet(ConvNeXT):
         self.min_coarse_cells = min_coarse_cells
         self.kernel_size = kernel_size
         self.activation = activation
-        self.scalers = scalers
+        # ``scalers`` may be a mapping, a path to a scaler YAML, or None for the
+        # packaged CONUS2.1 statistics, so a config can select a basin-specific
+        # set with ``model_def.scalers``.
+        self.scalers = load_scalers(scalers)
         self.pressure_names = pressure_names
+        # Settle the layer -> scaler-key mapping once at construction. This
+        # keeps the scaling loops free of string formatting and confines the
+        # legacy ``press_diff_*`` key handling to one place.
+        self.pressure_scaler_names = resolve_pressure_scaler_names(
+            self.scalers, pressure_names
+        )
         self.evaptrans_names = evaptrans_names
         self.n_evaptrans = n_evaptrans
         self.param_names = param_names

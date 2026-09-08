@@ -12,6 +12,109 @@ from torch.utils.data import Dataset
 from .logger import info, verbose
 
 
+def timestep_files(run_name: str, member_dir: Path, variable: str) -> Dict[int, Path]:
+    """Map timestep number to PFB path for one output variable.
+
+    Module level so anything that has to see the same files as training 
+    the scaler fitter, for example, resolves them by the same rule.
+    """
+
+    pattern = re.compile(
+        rf"^{re.escape(run_name)}\.out\.{re.escape(variable)}\.(\d+)\.pfb$"
+    )
+    result = {}
+    for file_path in member_dir.glob(f"{run_name}.out.{variable}.*.pfb"):
+        match = pattern.match(file_path.name)
+        if match:
+            timestep = int(match.group(1))
+            if timestep in result:
+                raise ValueError(
+                    f"Duplicate {variable} timestep {timestep} in {member_dir}"
+                )
+            result[timestep] = file_path
+    return result
+
+
+def resolve_parameter_file(run_name: str, member_dir: Path, parameter: str) -> Path:
+    output_file = member_dir / f"{run_name}.out.{parameter}.pfb"
+    input_file = member_dir / f"{parameter}.pfb"
+    # MJB contains two masks: ``mask.pfb`` is the one-channel binary domain
+    # mask, while ``mjb.out.mask.pfb`` is a ten-layer diagnostic encoded as
+    # 0/99999. Preserve the historical output-first order for other fields.
+    candidates = (
+        (input_file, output_file)
+        if parameter == "mask"
+        else (output_file, input_file)
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ValueError(
+        f"No static parameter file found for {parameter!r} in {member_dir}; "
+        f"tried {[str(path) for path in candidates]}"
+    )
+
+
+def normalize_member_id(member_id) -> str:
+    member_id = str(member_id)
+    if member_id.startswith("member_"):
+        member_id = member_id[len("member_") :]
+    return member_id
+
+
+def metadata_member_ids(base_dir: Path) -> List[str]:
+    """Member ids listed in ``metadata.csv``, or an empty list if absent."""
+
+    metadata_path = Path(base_dir) / "metadata.csv"
+    if not metadata_path.is_file():
+        return []
+
+    with metadata_path.open(newline="") as metadata_file:
+        reader = csv.DictReader(metadata_file)
+        if not reader.fieldnames or "member_id" not in reader.fieldnames:
+            raise ValueError(f"metadata.csv has no member_id column: {metadata_path}")
+        return [normalize_member_id(row["member_id"]) for row in reader]
+
+
+def discover_member_directories(base_dir: Path, member_ids=None):
+    """Resolve ``(member_id, path)`` pairs for an ensemble or a single run.
+
+    A directory with no ``member_*`` children is treated as one unnamed run, so
+    callers handle both layouts without branching. Paths are resolved locally
+    rather than read from ``metadata.csv``, whose stored directories may be
+    stale; the file is consulted only for which members exist.
+    """
+
+    base_dir = Path(base_dir)
+    discovered = {
+        path.name[len("member_") :]: path
+        for path in sorted(base_dir.glob("member_*"))
+        if path.is_dir()
+    }
+
+    if not discovered:
+        if member_ids:
+            raise ValueError(
+                f"member_ids were supplied, but no member_* directories exist in {base_dir}"
+            )
+        return [("single", base_dir)]
+
+    requested = (
+        [normalize_member_id(member_id) for member_id in member_ids]
+        if member_ids is not None
+        else metadata_member_ids(base_dir) or list(discovered)
+    )
+    if not requested:
+        raise ValueError(f"No ensemble members selected from {base_dir}")
+
+    missing = [member_id for member_id in requested if member_id not in discovered]
+    if missing:
+        raise ValueError(
+            f"Requested ensemble members are missing from {base_dir}: {missing}"
+        )
+    return [(member_id, discovered[member_id]) for member_id in requested]
+
+
 @dataclass(frozen=True)
 class SampleIndex:
     """Location of one spatial and temporal sample within one ensemble member."""
@@ -157,88 +260,21 @@ class ParFlowDataset(Dataset):
 
     @staticmethod
     def _normalize_member_id(member_id) -> str:
-        member_id = str(member_id)
-        if member_id.startswith("member_"):
-            member_id = member_id[len("member_") :]
-        return member_id
+        return normalize_member_id(member_id)
 
     def _metadata_member_ids(self) -> List[str]:
-        metadata_path = self.base_dir / "metadata.csv"
-        if not metadata_path.is_file():
-            return []
-
-        with metadata_path.open(newline="") as metadata_file:
-            reader = csv.DictReader(metadata_file)
-            if not reader.fieldnames or "member_id" not in reader.fieldnames:
-                raise ValueError(f"metadata.csv has no member_id column: {metadata_path}")
-            return [self._normalize_member_id(row["member_id"]) for row in reader]
+        return metadata_member_ids(self.base_dir)
 
     def _discover_member_directories(self, member_ids) -> List[Tuple[str, Path]]:
         """Resolve member paths locally instead of trusting stored absolute paths."""
 
-        discovered = {
-            path.name[len("member_") :]: path
-            for path in sorted(self.base_dir.glob("member_*"))
-            if path.is_dir()
-        }
-
-        if not discovered:
-            if member_ids:
-                raise ValueError(
-                    f"member_ids were supplied, but no member_* directories exist in {self.base_dir}"
-                )
-            return [("single", self.base_dir)]
-
-        requested = (
-            [self._normalize_member_id(member_id) for member_id in member_ids]
-            if member_ids is not None
-            else self._metadata_member_ids() or list(discovered)
-        )
-        if not requested:
-            raise ValueError(f"No ensemble members selected from {self.base_dir}")
-
-        missing = [member_id for member_id in requested if member_id not in discovered]
-        if missing:
-            raise ValueError(
-                f"Requested ensemble members are missing from {self.base_dir}: {missing}"
-            )
-
-        return [(member_id, discovered[member_id]) for member_id in requested]
+        return discover_member_directories(self.base_dir, member_ids)
 
     def _timestep_files(self, member_dir: Path, variable: str) -> Dict[int, Path]:
-        pattern = re.compile(
-            rf"^{re.escape(self.run_name)}\.out\.{re.escape(variable)}\.(\d+)\.pfb$"
-        )
-        result = {}
-        for file_path in member_dir.glob(f"{self.run_name}.out.{variable}.*.pfb"):
-            match = pattern.match(file_path.name)
-            if match:
-                timestep = int(match.group(1))
-                if timestep in result:
-                    raise ValueError(
-                        f"Duplicate {variable} timestep {timestep} in {member_dir}"
-                    )
-                result[timestep] = file_path
-        return result
+        return timestep_files(self.run_name, member_dir, variable)
 
     def _resolve_parameter_file(self, member_dir: Path, parameter: str) -> Path:
-        output_file = member_dir / f"{self.run_name}.out.{parameter}.pfb"
-        input_file = member_dir / f"{parameter}.pfb"
-        # MJB contains two masks: ``mask.pfb`` is the one-channel binary domain
-        # mask, while ``mjb.out.mask.pfb`` is a ten-layer diagnostic encoded as
-        # 0/99999. Preserve the historical output-first order for other fields.
-        candidates = (
-            (input_file, output_file)
-            if parameter == "mask"
-            else (output_file, input_file)
-        )
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-        raise ValueError(
-            f"No static parameter file found for {parameter!r} in {member_dir}; "
-            f"tried {[str(path) for path in candidates]}"
-        )
+        return resolve_parameter_file(self.run_name, member_dir, parameter)
 
     def _build_member_index(self, member_id: str, member_dir: Path) -> MemberFiles:
         pressure_files = self._timestep_files(member_dir, "press")
@@ -302,13 +338,13 @@ class ParFlowDataset(Dataset):
     def generate_namelist(self):
         """Record the exact channel ordering used by the model."""
 
-        self.PRESSURE_NAMES = [f"press_diff_{i}" for i in range(self.Z_EXTENT)]
+        self.PRESSURE_NAMES = [f"pressure_{i}" for i in range(self.Z_EXTENT)]
         evaptrans_layers = self._selected_layer_indices(
             self.Z_EXTENT, self.n_evaptrans
         )
         self.EVAPTRANS_NAMES = [f"evaptrans_{i}" for i in evaptrans_layers]
         self.PARAM_NAMES = []
-        self.OUTPUT_NAMES = [f"press_diff_{i}" for i in range(self.Z_EXTENT)]
+        self.OUTPUT_NAMES = [f"pressure_{i}" for i in range(self.Z_EXTENT)]
 
         first_member = next(iter(self.members.values()))
         patch_keys = {
@@ -335,6 +371,7 @@ class ParFlowDataset(Dataset):
         if selection < 0:
             start = max(0, n_layers + selection)
             return list(range(start, n_layers))
+
         return list(range(n_layers))
 
     @classmethod

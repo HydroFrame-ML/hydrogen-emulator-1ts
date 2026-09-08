@@ -13,7 +13,8 @@ from .visualization import (
     create_error_distribution_plot,
     create_channel_performance_heatmap,
     create_training_progress_plot,
-    fig_to_image
+    fig_to_image,
+    flatten_timesteps
 )
 from .callbacks import Callback
 
@@ -231,10 +232,11 @@ class TensorBoardTracker(Callback):
                                      targets: torch.Tensor, logs: Dict[str, Any]):
         """Log prediction visualization images."""
         try:
-            # Ensure tensors are on CPU
-            predictions = predictions.cpu()
-            targets = targets.cpu()
-            
+            # Ensure tensors are on CPU, and fold any rollout axis into the
+            # batch so the helpers see (batch, channel, y, x).
+            predictions = flatten_timesteps(predictions.cpu())
+            targets = flatten_timesteps(targets.cpu())
+
             # Limit number of samples to avoid memory issues
             max_samples = min(self.max_images, predictions.shape[0])
             
@@ -500,8 +502,11 @@ def compute_quantile_metrics(predictions: torch.Tensor, targets: torch.Tensor,
     return quantile_metrics
 
 
-def create_tensorboard_tracker_from_config(config: Dict[str, Any], 
-                                          experiment_name: str) -> Optional[TensorBoardTracker]:
+def create_tensorboard_tracker_from_config(
+    config: Dict[str, Any],
+    experiment_name: str,
+    log_dir: Optional[str] = None,
+) -> Optional[TensorBoardTracker]:
     """
     Create TensorBoard tracker from configuration.
     
@@ -517,7 +522,12 @@ def create_tensorboard_tracker_from_config(config: Dict[str, Any],
     if not tensorboard_config.get('enabled', True):
         return None
     
-    log_dir = config.get('tensorboard_log_dir', './runs')
+    # Training passes log_location explicitly so TensorBoard stays alongside
+    # model artifacts. Keep tensorboard_log_dir as an optional override for
+    # callers that intentionally want a separate directory.
+    log_dir = config.get(
+        'tensorboard_log_dir', log_dir or config.get('log_location', './runs')
+    )
     
     tracker = TensorBoardTracker(
         log_dir=log_dir,

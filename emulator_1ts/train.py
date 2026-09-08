@@ -3,10 +3,16 @@ import pandas as pd
 from tqdm import tqdm
 from typing import Optional, Dict, Any
 from .logger import info, verbose, error, get_log_level, LogLevel
+from .losses import StructuredLoss
 from .utils import (
     compute_boundary_losses,
     compute_channel_losses,
     compute_quantile_metrics,
+    persistence_skill_sums,
+    ponding_flip_sums,
+    pressure_layer_sigmas,
+    pressure_top_zero_scaled,
+    skill_from_sums,
 )
 from .callbacks import CallbackManager
 
@@ -15,11 +21,18 @@ DTYPE = torch.float64
 
 
 def calculate_masked_loss(predictions, targets, valid_mask, loss_fn):
-    """Apply a loss only to valid ParFlow cells."""
+    """Apply a loss only to valid ParFlow cells.
+
+    Structured losses need the spatial layout to difference neighbouring
+    layers, so they receive the full tensors and do their own masking.
+    Pointwise losses keep the original flattened path.
+    """
 
     valid_mask = valid_mask.to(torch.bool)
     if not torch.any(valid_mask):
         raise ValueError("Cannot calculate loss: batch contains no valid cells")
+    if isinstance(loss_fn, StructuredLoss):
+        return loss_fn(predictions, targets, valid_mask)
     return loss_fn(predictions[valid_mask], targets[valid_mask])
 
 
@@ -100,7 +113,28 @@ def train_epoch(
     
     epoch_loss = 0.0
     num_batches = 0
-    
+
+    # Skill is accumulated over every batch rather than a single sample, since
+    # it is the metric that decides whether a checkpoint is worth benchmarking.
+    try:
+        layer_sigmas = pressure_layer_sigmas(model)
+    except (AttributeError, ValueError):
+        layer_sigmas = None
+    # Ponding flips are counted at the one-step horizon only: that is the
+    # guess ParFlow consumes, and every flip lands the solver on the wrong
+    # overland-flow branch.  Persistence's count is the acceptance bar.
+    try:
+        top_zero_scaled = pressure_top_zero_scaled(model)
+    except (AttributeError, ValueError):
+        top_zero_scaled = None
+    skill_model_sse = 0.0
+    skill_persistence_sse = 0.0
+    skill_step0_model_sse = 0.0
+    skill_step0_persistence_sse = 0.0
+    pond_model_flips = 0.0
+    pond_persistence_flips = 0.0
+    pond_valid_cells = 0.0
+
     # Store sample predictions for visualization
     sample_predictions = None
     sample_targets = None
@@ -201,7 +235,48 @@ def train_epoch(
         
         epoch_loss += loss.item()
         num_batches += 1
-        
+
+        # Persistence for a step is the state the solver would otherwise reuse:
+        # the input pressure for the first step, and the previous true state
+        # afterwards.  Comparing against truth rather than the model's own
+        # rollout keeps this a like-for-like baseline at every step.
+        with torch.no_grad():
+            if is_multistep:
+                for t in range(n_timesteps):
+                    reference = state if t == 0 else y[t - 1]
+                    model_sse, persistence_sse = persistence_skill_sums(
+                        yhat[t], y[t], reference, valid_mask[t], layer_sigmas
+                    )
+                    skill_model_sse += model_sse
+                    skill_persistence_sse += persistence_sse
+                    if t == 0:
+                        skill_step0_model_sse += model_sse
+                        skill_step0_persistence_sse += persistence_sse
+                        if top_zero_scaled is not None:
+                            flips, ref_flips, cells = ponding_flip_sums(
+                                yhat[0], y[0], state, valid_mask[0],
+                                top_zero_scaled,
+                            )
+                            pond_model_flips += flips
+                            pond_persistence_flips += ref_flips
+                            pond_valid_cells += cells
+            else:
+                model_sse, persistence_sse = persistence_skill_sums(
+                    yhat, y, state, valid_mask, layer_sigmas
+                )
+                skill_model_sse += model_sse
+                skill_persistence_sse += persistence_sse
+                skill_step0_model_sse += model_sse
+                skill_step0_persistence_sse += persistence_sse
+                if top_zero_scaled is not None:
+                    flips, ref_flips, cells = ponding_flip_sums(
+                        yhat, y, state, valid_mask, top_zero_scaled
+                    )
+                    pond_model_flips += flips
+                    pond_persistence_flips += ref_flips
+                    pond_valid_cells += cells
+
+
         # Store first batch for visualization (validation only)
         if not train and i == 0:
             # Unscale for visualization
@@ -229,7 +304,33 @@ def train_epoch(
     
     # Compute additional metrics for validation
     metrics = {f'{prefix}_loss': avg_loss}
-    
+
+    # 1.0 is perfect, 0.0 is no better than persistence, negative is worse than
+    # doing nothing.  step0 is the one-step guess ParFlow actually consumes.
+    metrics[f'{prefix}_skill'] = skill_from_sums(
+        skill_model_sse, skill_persistence_sse
+    )
+    metrics[f'{prefix}_skill_step0'] = skill_from_sums(
+        skill_step0_model_sse, skill_step0_persistence_sse
+    )
+
+    # One-step ponding flips per valid top-layer cell.  The model must reach
+    # or beat the persistence rate before a checkpoint is worth benchmarking;
+    # the ratio makes that a single number (<= 1.0 passes).
+    if pond_valid_cells > 0:
+        metrics[f'{prefix}_pond_flip_rate'] = (
+            pond_model_flips / pond_valid_cells
+        )
+        metrics[f'{prefix}_pond_flip_rate_persistence'] = (
+            pond_persistence_flips / pond_valid_cells
+        )
+        metrics[f'{prefix}_pond_flip_ratio'] = (
+            pond_model_flips / pond_persistence_flips
+            if pond_persistence_flips > 0
+            else float('nan')
+        )
+
+
     if not train and sample_predictions is not None and sample_targets is not None:
         # Compute channel losses
         channel_losses = compute_channel_losses(
